@@ -12,6 +12,7 @@ Contents:
 | `sim/` | Instruction-set simulator that loads an ELF and reports pipeline hazards |
 | `rt/` | Start-up code (`crt0.S`) and linker scripts for the simulator and the device |
 | `tools/` | `mipsx_pack.py` turns a linked ELF into an SPA3000 upgrade image; `mipsx_verify.py` checks one |
+| `tests/` | C execution tests on the simulator: compiler-rt's builtins tests and the GCC C torture suite (`run_tests.py`) |
 
 `make` builds the simulator; `make check` runs the simulator, crt0 and
 packer tests (needs a C compiler and python3).
