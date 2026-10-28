@@ -100,6 +100,7 @@ check: $(BUILD)/lwip_test $(BUILD)/lfs_test $(BUILD)/tls_client_min $(BUILD)/tls
 	$(SIM) $(BUILD)/tls_client_full
 
 # BearSSL's own test vectors, one simulator run per test; about an hour.
+# A test stopped by the cycle limit is reported as "timeout", not a failure.
 check-bearssl: $(BUILD)/bearssl_test_crypto
 	./run_bearssl_tests.sh $(SIM) $< $(BEARSSL)/test/test_crypto.c $(JOBS) | tee $(BUILD)/bearssl_tests.txt
 	! grep FAIL $(BUILD)/bearssl_tests.txt

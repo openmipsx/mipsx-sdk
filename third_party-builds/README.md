@@ -54,9 +54,17 @@ tests need the `check` library and fork, so `lfs_test.c` and
 Simulator, llvm-project `mipsx` at the S16 commits: `lwip_test`,
 `lfs_test`, `tls_client_min` and `tls_client_full` pass at -Os and -O2,
 with and without assertions, and at -Oz without; the -Os and -O2 builds
-also pass `-mllvm -verify-machineinstrs`. BearSSL `test_crypto`: see
-[S16 in the LLVM plan](../../linksys-spa3000/docs/plan/llvm-backend.md)
-and `build/*/bearssl_tests.txt`.
+also pass `-mllvm -verify-machineinstrs`.
+
+BearSSL `test_crypto` (`make check-bearssl`, -Os and -O2 with
+assertions, a limit of 2×10¹⁰ cycles per test): 34 pass, 9 n/a (code
+for x86 or POWER only), none fail. The other 14 reach the cycle limit
+without a failure: DES (Monte Carlo), HMAC (the constant-time
+`br_hmac_outCT` over every length), RSA and the elliptic-curve tests
+(big-number arithmetic with no multiplier, so mostly in `__mulsi3` and
+`__muldi3`). The DES, HMAC, C25519 and ECDSA ones print some passed
+vectors before the limit; the RSA and EC_prime ones do not get through
+their first vector. The results are in `build/*/bearssl_tests.txt`.
 
 ## Sizes
 
