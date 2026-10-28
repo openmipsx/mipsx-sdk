@@ -1,9 +1,9 @@
 # tools: image packer and verifier
 
 Work package S7 of the LLVM backend plan. Both are Python 3 scripts that
-use only the standard library, written from
-`linksys-spa3000/docs/spec/firmware-image-format.md` ("format spec")
-alone. They contain no vendor code or data, and the tests use only our
+use only the standard library, written from the
+[firmware image format spec](https://github.com/openmipsx/devices/blob/main/common/firmware-image-format.md)
+("format spec") alone. They contain no vendor code or data, and the tests use only our
 own programs.
 
 | File | What |

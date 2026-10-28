@@ -2,7 +2,7 @@
 
 Status: version 1, 2026-10-28 (§8.6 and the DWARF rules of §2.4 and §4
 added in S17). Written in work package S1 of
-`linksys-spa3000/docs/plan/llvm-backend.md`. Clean-side document.
+the LLVM backend plan. Clean-side document.
 
 This document is the contract between the LLVM backend (assembler,
 object writer, lld, code generator, Clang), the simulator, the start-up
@@ -10,7 +10,7 @@ code and hand-written assembly. Every later work package implements from
 it. Where something here disagrees with the code, one of them is a bug;
 fix the code or change this document in the same commit.
 
-Sources: the processor spec `linksys-spa3000/docs/spec/processor-es3890.md`
+Sources: the [processor spec](https://github.com/openmipsx/devices/blob/main/common/processor-es3890.md)
 ("spec §n") and Paul Chow's *MIPS-X Instruction Set and Programmer's
 Manual* ("manual §n"). The stock firmware's convention (spec §7) informed
 some choices, but this ABI is ours and does not need to interoperate with

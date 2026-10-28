@@ -5,11 +5,11 @@ Copyright 2026 The mipsx-sdk authors.
 SPDX-License-Identifier: Apache-2.0
 
 Re-reads an image using only the rules of
-linksys-spa3000/docs/spec/firmware-image-format.md ("spec"), independently
+openmipsx/devices common/firmware-image-format.md ("spec"), independently
 of mipsx_pack.py (it shares no code with it).  It applies every check the
 spec says the boot selector or an installer makes, the structure the spec
 describes for packed sections, and the extra rules for our own images
-(only type 2 sections, open-source-stack.md §3.5).  Python 3 standard
+(only type 2 sections, openmipsx/.github plan/open-source-stack.md §3.5).  Python 3 standard
 library only.
 
 Usage: mipsx_verify.py image.bin [-v] [--allow-types 0,1,2]

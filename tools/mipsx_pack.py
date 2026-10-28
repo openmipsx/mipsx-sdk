@@ -5,11 +5,11 @@ upgrade image.
 Copyright 2026 The mipsx-sdk authors.
 SPDX-License-Identifier: Apache-2.0
 
-Written from linksys-spa3000/docs/spec/firmware-image-format.md ("format
+Written from openmipsx/devices common/firmware-image-format.md ("format
 spec") alone, with no vendor code or data.  Python 3 standard library
 only.  The image holds one section, of type 2 (application), so that a
 stock installer leaves the boot section and the recovery program alone
-(open-source-stack.md §3.5).  See tools/README.md for the layout and the
+(openmipsx/.github plan/open-source-stack.md §3.5).  See tools/README.md for the layout and the
 decisions behind it.
 
 Usage: mipsx_pack.py prog.elf -o prog.bin [--version 9.0.0]

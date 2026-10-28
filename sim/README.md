@@ -2,8 +2,8 @@
 
 Runs a linked MIPS-X ELF executable and reports every violation of the
 pipeline rules in [`../docs/abi.md`](../docs/abi.md) §9 that it sees,
-instead of silently computing a wrong answer. Written from the processor
-spec (`linksys-spa3000/docs/spec/processor-es3890.md`), the ABI and the
+instead of silently computing a wrong answer. Written from the
+[processor spec](https://github.com/openmipsx/devices/blob/main/common/processor-es3890.md), the ABI and the
 public MIPS-X manual. Work package S6 of the LLVM backend plan.
 
 ## Building and testing

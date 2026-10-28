@@ -3,7 +3,7 @@
  * Copyright 2026 The mipsx-sdk authors.
  * SPDX-License-Identifier: Apache-2.0
  *
- * Sources: linksys-spa3000/docs/spec/processor-es3890.md ("spec"),
+ * Sources: openmipsx/devices common/processor-es3890.md ("spec"),
  * mipsx-sdk/docs/abi.md ("abi") and the MIPS-X manual ("manual").
  * Bits are numbered from the least significant bit (bit 0), as in the spec.
  */

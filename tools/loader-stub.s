@@ -3,7 +3,7 @@
 ; Copyright 2026 The mipsx-sdk authors.
 ; SPDX-License-Identifier: Apache-2.0
 ;
-; Written from linksys-spa3000/docs/spec/firmware-image-format.md and
+; Written from openmipsx/devices common/firmware-image-format.md and
 ; docs/abi.md; no vendor code.  mipsx_pack.py holds the assembled words
 ; (STUB_WORDS) and tools/tests checks that they match this source.  Until
 ; llvm-mc exists, assemble with:

@@ -79,4 +79,4 @@ still selects it, which keeps the compiler tests independent of picolibc.
 ## Results
 
 The pass rates per session are in the S14 row of the backend plan
-(`linksys-spa3000/docs/plan/llvm-backend.md` §5).
+(§5).
