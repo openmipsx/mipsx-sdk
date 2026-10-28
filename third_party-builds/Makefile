@@ -25,6 +25,7 @@ CC := $(MIPSX_LLVM_BIN)/clang
 AR := $(MIPSX_LLVM_BIN)/llvm-ar
 SIZE := $(MIPSX_LLVM_BIN)/llvm-size
 SIM := $(SDK)/sim/build/mipsx-sim
+HOSTCC ?= cc
 JOBS ?= 8
 
 CFLAGS := --target=mipsx --sysroot=$(SYSROOT) $(OPT) \
@@ -57,7 +58,8 @@ obj = $(patsubst $(THIRD_PARTY)/%.c,$(BUILD)/obj/%.o,$(1))
 
 LIBS := $(BUILD)/liblwip.a $(BUILD)/liblittlefs.a $(BUILD)/libbearssl.a
 PROGS := $(BUILD)/lwip_test $(BUILD)/lfs_test $(BUILD)/bearssl_test_crypto \
-	$(BUILD)/tls_client_min $(BUILD)/tls_client_full $(BUILD)/baseline
+	$(BUILD)/tls_client_min $(BUILD)/tls_client_full $(BUILD)/baseline \
+	$(BUILD)/bearssl_pk_kat
 
 all: $(LIBS) $(PROGS)
 
@@ -88,6 +90,13 @@ $(BUILD)/bearssl_test_crypto: $(BEARSSL)/test/test_crypto.c bearssl/test_main.c 
 	$(CC) $(CFLAGS) $(BEARSSL_INC) -Wno-unused-variable -Dmain=bearssl_test_main \
 		-c $(BEARSSL)/test/test_crypto.c -o $(BUILD)/test_crypto.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $(BUILD)/test_crypto.o bearssl/test_main.c $(BUILD)/libbearssl.a -o $@
+$(BUILD)/bearssl_pk_kat: bearssl/pk_kat.c $(BEARSSL)/test/test_crypto.c $(BUILD)/libbearssl.a
+	$(CC) $(CFLAGS) $(BEARSSL_INC) -I$(BEARSSL)/test -Wno-unused-variable $(LDFLAGS) \
+		$< $(BUILD)/libbearssl.a -o $@
+# The same test built for the host, as a reference.
+build/host/bearssl_pk_kat: bearssl/pk_kat.c $(BEARSSL)/test/test_crypto.c $(BEARSSL_SRC)
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -O2 -w $(BEARSSL_INC) -I$(BEARSSL)/test $< $(BEARSSL_SRC) -o $@
 $(BUILD)/tls_client_min: bearssl/tls_client.c $(BUILD)/libbearssl.a
 	$(CC) $(CFLAGS) $(BEARSSL_INC) $(LDFLAGS) $^ -o $@
 $(BUILD)/tls_client_full: bearssl/tls_client.c $(BUILD)/libbearssl.a
@@ -101,9 +110,17 @@ check: $(BUILD)/lwip_test $(BUILD)/lfs_test $(BUILD)/tls_client_min $(BUILD)/tls
 
 # BearSSL's own test vectors, one simulator run per test; about an hour.
 # A test stopped by the cycle limit is reported as "timeout", not a failure.
-check-bearssl: $(BUILD)/bearssl_test_crypto
-	./run_bearssl_tests.sh $(SIM) $< $(BEARSSL)/test/test_crypto.c $(JOBS) | tee $(BUILD)/bearssl_tests.txt
+# Before them, pk_kat: known answers for the public-key operations of a
+# TLS client (RSA, P-256, ECDSA, X25519), which test_crypto's vectors
+# cannot reach within the limit, with cycles per operation.
+check-bearssl: check-pk-kat $(BUILD)/bearssl_test_crypto
+	./run_bearssl_tests.sh $(SIM) $(BUILD)/bearssl_test_crypto $(BEARSSL)/test/test_crypto.c $(JOBS) | tee $(BUILD)/bearssl_tests.txt
 	! grep FAIL $(BUILD)/bearssl_tests.txt
+
+check-pk-kat: $(BUILD)/bearssl_pk_kat build/host/bearssl_pk_kat
+	build/host/bearssl_pk_kat
+	$(SIM) -c 0 -s $(BUILD)/bearssl_pk_kat 2>&1 | tee $(BUILD)/bearssl_pk_kat.txt
+	grep -q '^PASS' $(BUILD)/bearssl_pk_kat.txt
 
 sizes:
 	$(MAKE) OPT=-Os all
@@ -115,4 +132,4 @@ sizes:
 clean:
 	rm -rf build
 
-.PHONY: all check check-bearssl sizes clean
+.PHONY: all check check-bearssl check-pk-kat sizes clean

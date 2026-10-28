@@ -25,7 +25,8 @@ simulator.
 make MIPSX_LLVM_BIN=~/src/mipsx/llvm-project/build/bin             # -Os, with assertions
 make MIPSX_LLVM_BIN=... OPT=-O2 ASSERT=0                            # -O2, release
 make check MIPSX_LLVM_BIN=...                                       # self-tests
-make check-bearssl MIPSX_LLVM_BIN=...                               # BearSSL's test vectors (slow)
+make check-pk-kat MIPSX_LLVM_BIN=...                                # RSA/EC known answers, cycles (2 min)
+make check-bearssl MIPSX_LLVM_BIN=...                               # that, then BearSSL's test vectors (slow)
 make sizes MIPSX_LLVM_BIN=...                                       # all four builds and the size table
 ```
 
@@ -40,6 +41,7 @@ directory, for comparing compilers). Everything is compiled with
 | `lwip/lwip_test.c` | TCP echo (20000 bytes) and UDP (1 to 3000 bytes, so fragmented) over the loopback interface; then a dummy Ethernet interface with DHCP, httpd, TFTP and SNTP started, checking the IP header checksum of every frame sent |
 | `littlefs/lfs_test.c` | littlefs on its RAM block device (32 blocks of 4 KB): format, directories, files of 0 to 20000 bytes, 400 rewrites of a config file (`block_cycles` 100, so compaction and relocation), seek, overwrite, truncate, rename, remove, unmount and remount with every check repeated, `lfs_fs_gc` |
 | `bearssl/tls_client.c` | A TLS client that builds a ClientHello and checks its record header; `tls_client_full` uses `br_ssl_client_init_full`, `tls_client_min` a TLS 1.2 profile for HTTPS provisioning (ECDHE_RSA/ECDHE_ECDSA, AES-128-GCM or ChaCha20-Poly1305, SHA-256/384, P-256, the `i15`/`m15` code and `x509_minimal`) |
+| `bearssl/pk_kat.c` | Known answers for the public-key code of a TLS client, with BearSSL's own vectors (it includes `test/test_crypto.c`): RSA-1024/2048 public operation and PKCS#1 verification (`i15`, `i31`), P-256 `mul`/`mulgen` and ECDSA verification (`p256_m15`, `prime_i15`), a P-384 ECDSA verification, X25519 (`c25519_m15`); one line per operation with its simulator cycles. Also built for the host (`build/host/`, nanoseconds) as a reference |
 | `bearssl/test_main.c`, `run_bearssl_tests.sh` | BearSSL's `test/test_crypto.c` (all its known-answer tests), one simulator run per test, test names on stdin since the simulator has no argv |
 | `baseline.c` | printf only |
 | `sizes.py` | Bytes each library contributes to each linked program, from lld's map file |
@@ -65,6 +67,47 @@ without a failure: DES (Monte Carlo), HMAC (the constant-time
 `__muldi3`). The DES, HMAC, C25519 and ECDSA ones print some passed
 vectors before the limit; the RSA and EC_prime ones do not get through
 their first vector. The results are in `build/*/bearssl_tests.txt`.
+
+Those 14 are slow, not wrong: `pk_kat` (`make check-pk-kat`, run first
+by `check-bearssl`) checks the operations a TLS client needs and
+passes at -Os and -O2, matching the host. Cycles per operation at -Os
+(-O2 is within 2%), and the time at the guessed 81 MHz (hardware.md;
+the simulator does not model cache misses, so these are lower bounds):
+
+| Operation | Cycles | at 81 MHz |
+|---|---|---|
+| RSA-1024 public, `i15` | 12.7 M | 0.16 s |
+| RSA-2048 public or PKCS#1 verify, `i15` / `i31` | 47.4 M / 40.4 M | 0.58 s / 0.50 s |
+| P-256 `mul` / `mulgen`, `p256_m15` | 56.2 M / 37.8 M | 0.69 s / 0.47 s |
+| P-256 ECDSA verify, `p256_m15` | 104 M | 1.28 s |
+| P-256 `mul`, `mulgen`, `prime_i15` | 119 M | 1.47 s |
+| P-256 ECDSA verify, `prime_i15` | 238 M | 2.94 s |
+| P-384 ECDSA verify, `prime_i15` | 701 M | 8.6 s |
+| X25519, `c25519_m15` | 28.4 M | 0.35 s |
+
+The public-key work of one TLS 1.2 handshake, with a two-certificate
+chain: ECDHE_RSA with RSA-2048 certificates and X25519, three RSA
+verifications and two X25519 multiplications, is about 200 M cycles
+(2.5 s; 7.4 s if the CPU runs at the crystal's 27 MHz); with P-256
+instead of X25519, 236 M (2.9 s). ECDHE_ECDSA with P-256 certificates
+is about 410 M (5 s), and a P-384 intermediate (common in ECDSA
+chains) adds 700 M (8.6 s), too slow. So the
+provisioning server should use RSA certificates (or ECDSA P-256 only),
+and the client could add X25519: `tls_client_min` sets only
+`br_ec_p256_m15`, which has neither X25519 nor P-384; `br_ec_all_m15`
+has both.
+
+Two-thirds of the elliptic-curve time is in `__mulsi3` (64% of a
+`p256_m15` multiplication, 71% of X25519: about 1.4 M calls of 25
+cycles for one P-256 `mul`, mostly its 16-step path). BearSSL's
+Karatsuba code for slow multipliers (`-DBR_SLOW_MUL15=1`) is 8% faster
+for P-256 and 4% for X25519 and also passes `pk_kat`.
+`-DBR_CT_MUL15=1` does nothing here: Clang removes the `| 0x80000000`
+that it relies on, since only the low 31 bits of the product are used.
+Note that `__mulsi3` is not constant-time (14 cycles when the first
+operand fits in 8 bits, 26 when it fits in 16, 30 or 48 otherwise),
+which leaks through code that multiplies secrets, such as the ECDHE
+key and `ghash_ctmul32` (the GCM key).
 
 ## Sizes
 
