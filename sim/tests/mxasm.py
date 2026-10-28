@@ -20,6 +20,8 @@
 #   'exit #N' stores N to the exit register (clobbers r1).
 # Expressions: integers, labels (byte addresses), '.', + and -, and the
 # operators %hi() %lo() %w() of abi §10.6 (evaluated at assembly time).
+# %call() is accepted in a jspci immediate and means %w() (an absolute
+# word address through r0, what R_MIPSX_CALL17 picks below 256 KB).
 #
 # Sections and linking (for the run-time tests in rt/, work package S7):
 #   .text .data .bss .rodata and '.section NAME[,flags...]' switch output
@@ -142,11 +144,11 @@ class Assembler:
     # -- expressions ------------------------------------------------------
     def eval(self, expr, pc, final):
         """Evaluates EXPR: numbers, symbols, '.', parentheses, unary and
-        binary + and -, and %hi() %lo() %w()."""
+        binary + and -, and %hi() %lo() %w() %call()."""
         e = expr.strip()
         if e.startswith("#"):
             e = e[1:].strip()
-        toks = re.findall(r"0[xX][0-9a-fA-F]+|\d+|%(?:hi|lo|w)\(|"
+        toks = re.findall(r"0[xX][0-9a-fA-F]+|\d+|%(?:hi|lo|w|call)\(|"
                           r"[A-Za-z_.$][\w.$]*|[-+()]|\S", e)
         pos = [0]
 
@@ -175,7 +177,7 @@ class Assembler:
                     v = (v - (1 << 32) if v & 0x80000000 else v) >> 15
                 elif t == "%lo(":
                     v &= 0x7FFF
-                elif t == "%w(":
+                elif t in ("%w(", "%call("):
                     if final and v & 3:
                         raise AsmError("%%w of unaligned value 0x%x" % v)
                     v >>= 2
