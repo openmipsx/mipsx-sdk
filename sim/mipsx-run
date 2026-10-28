@@ -1,0 +1,70 @@
+#!/bin/sh
+# mipsx-run: run a linked MIPS-X program on the simulator, for test
+# harnesses such as LLVM lit.
+#
+# Copyright 2026 The mipsx-sdk authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# usage: mipsx-run [--expect-exit=N] [--print-exit] [mipsx-sim options] prog.elf
+#
+#   --expect-exit=N  exit 0 if the program exits with status N, else
+#                    print a message to stderr and exit 1
+#   --print-exit     after the program ends, print "exit: N" on stdout
+#                    (for FileCheck)
+#   other options are passed to mipsx-sim (see mipsx-sim --help)
+#
+# Without --expect-exit, the exit status is the simulator's: the
+# program's own status, or 124 (cycle limit), 125 (simulation error, e.g.
+# a pipeline hazard), 126 (could not load).  stdin and stdout are the
+# program's; diagnostics go to stderr.
+#
+# The simulator is $MIPSX_SIM if set, else mipsx-sim next to this script
+# (installed layout), else build/mipsx-sim next to it (source tree), else
+# mipsx-sim on PATH.  $MIPSX_RUN_MAX_CYCLES, if set, is passed as
+# --max-cycles (an explicit --max-cycles option comes later and wins).
+
+expect=
+print_exit=
+dir=$(dirname "$0")
+
+if [ -n "$MIPSX_SIM" ]; then
+  sim=$MIPSX_SIM
+elif [ -x "$dir/mipsx-sim" ]; then
+  sim=$dir/mipsx-sim
+elif [ -x "$dir/build/mipsx-sim" ]; then
+  sim=$dir/build/mipsx-sim
+else
+  sim=mipsx-sim
+fi
+
+# Collect our own options; keep the rest in order for the simulator.
+n=$#
+while [ "$n" -gt 0 ]; do
+  arg=$1
+  shift
+  n=$((n - 1))
+  case $arg in
+    --expect-exit=*) expect=${arg#--expect-exit=} ;;
+    --print-exit) print_exit=1 ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+
+if [ -n "$MIPSX_RUN_MAX_CYCLES" ]; then
+  set -- "--max-cycles=$MIPSX_RUN_MAX_CYCLES" "$@"
+fi
+
+"$sim" "$@"
+status=$?
+
+if [ -n "$print_exit" ]; then
+  echo "exit: $status"
+fi
+if [ -n "$expect" ]; then
+  if [ "$status" -ne "$expect" ]; then
+    echo "mipsx-run: program exited with status $status, expected $expect" >&2
+    exit 1
+  fi
+  exit 0
+fi
+exit "$status"
