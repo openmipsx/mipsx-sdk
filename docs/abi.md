@@ -657,6 +657,7 @@ write only rd. Every printed alias reassembles to the same word.
 | `%w(expr)` | `.word` / `.long` / `.4byte` | R_MIPSX_32W |
 | plain symbolic `expr` | `addi` or `jspci` immediate, memory offset | R_MIPSX_ABS17 |
 | label | branch target | R_MIPSX_PC16 |
+| constant | branch target | None: the constant is the 16-bit displacement field itself, in words (target word = branch word + 2 + constant) |
 | plain `expr` | `.word` / `.long` / `.4byte` | R_MIPSX_32 |
 | plain `expr` | `.half` / `.short` / `.2byte` | R_MIPSX_16 |
 | plain `expr` | `.byte` | R_MIPSX_8 |
