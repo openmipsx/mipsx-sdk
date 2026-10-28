@@ -16,6 +16,7 @@ Contents:
 | `meson/`, `cmake/` | A Meson cross file and a CMake toolchain file for Clang and this SDK |
 | `docs/picolibc.md` | The C library: building picolibc into the sysroot and running its tests |
 | `docs/compiler-bugs/` | Reproducers for compiler bugs found while using the SDK |
+| `release/` | Toolchain release archives (Clang, lld, LLVM tools, sysroot with picolibc, simulator, packer) and a container image; `.github/workflows/` builds and publishes them |
 
 `make` builds the simulator; `make check` runs the simulator, crt0 and
 packer tests (needs a C compiler and python3).

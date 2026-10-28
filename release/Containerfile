@@ -1,0 +1,37 @@
+# Container image with the MIPS-X toolchain and SDK (release archives of
+# release/package.py) in /opt/mipsx, on PATH.
+#
+# Copyright 2026 The mipsx-sdk authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The build context must hold dist/mipsx-toolchain-*-linux-<arch>.tar.xz
+# for each platform built (x86_64 for linux/amd64, arm64 for linux/arm64):
+#
+#   docker buildx build -f release/Containerfile --platform linux/amd64 -t mipsx-toolchain .
+#   docker run --rm -v "$PWD:/work" mipsx-toolchain clang --target=mipsx -O2 hello.c -o hello
+#
+# Needs BuildKit (docker buildx, or podman/buildah) for the bind mount.
+
+FROM debian:trixie-slim
+
+# python3 for the packer; make, cmake, ninja and meson for projects.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      python3 make cmake ninja-build meson xz-utils ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG TARGETARCH
+RUN --mount=type=bind,source=dist,target=/dist \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) arch=x86_64 ;; \
+      arm64) arch=arm64 ;; \
+      *) echo "unsupported architecture $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+ && set -- /dist/mipsx-toolchain-*-linux-$arch.tar.xz \
+ && test "$#" -eq 1 -a -f "$1" \
+ && mkdir -p /opt/mipsx \
+ && tar -xJf "$1" -C /opt/mipsx --strip-components=1 --no-same-owner
+
+ENV PATH=/opt/mipsx/bin:$PATH
+WORKDIR /work
+CMD ["sh", "-c", "cat /opt/mipsx/BUILDINFO && clang --version"]

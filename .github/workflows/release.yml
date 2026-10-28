@@ -1,0 +1,222 @@
+# Toolchain releases: build the LLVM fork (only the MIPSX target) at the
+# commit in release/refs on Linux x86-64, Linux arm64 and macOS arm64,
+# package it with this SDK and picolibc (release/package.py), smoke-test
+# each archive from a clean directory, and on a v* tag publish the
+# archives as a GitHub release and a container image on ghcr.io
+# (release/Containerfile).  See release/README.md.
+#
+# Repository variables (optional):
+#   MIPSX_LLVM_REPO  owner/name of the LLVM fork (default <owner>/llvm-project)
+#   PICOLIBC_REPO    owner/name of the picolibc fork (default <owner>/picolibc)
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      llvm-ref:
+        description: 'LLVM fork commit or branch (default: release/refs)'
+        type: string
+        default: ''
+      picolibc-ref:
+        description: 'picolibc commit or branch (default: release/refs)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  MIPSX_LLVM_REPO: ${{ vars.MIPSX_LLVM_REPO || format('{0}/llvm-project', github.repository_owner) }}
+  PICOLIBC_REPO: ${{ vars.PICOLIBC_REPO || format('{0}/picolibc', github.repository_owner) }}
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  CCACHE_COMPRESS: 'true'
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Ubuntu, for the oldest glibc.
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+          - platform: linux-arm64
+            os: ubuntu-22.04-arm
+          - platform: macos-arm64
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 340
+    steps:
+      - name: Check out mipsx-sdk
+        uses: actions/checkout@v4
+        with:
+          path: mipsx-sdk
+          persist-credentials: false
+
+      - name: Version and commits
+        env:
+          LLVM_REF_INPUT: ${{ inputs.llvm-ref }}
+          PICOLIBC_REF_INPUT: ${{ inputs.picolibc-ref }}
+        run: |
+          grep '^[A-Z_]*=' mipsx-sdk/release/refs >> "$GITHUB_ENV"
+          if [ -n "$LLVM_REF_INPUT" ]; then echo "LLVM_REF=$LLVM_REF_INPUT" >> "$GITHUB_ENV"; fi
+          if [ -n "$PICOLIBC_REF_INPUT" ]; then echo "PICOLIBC_REF=$PICOLIBC_REF_INPUT" >> "$GITHUB_ENV"; fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=dev-${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check out the LLVM fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MIPSX_LLVM_REPO }}
+          ref: ${{ env.LLVM_REF }}
+          path: llvm-project
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out picolibc
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PICOLIBC_REPO }}
+          ref: ${{ env.PICOLIBC_REF }}
+          path: picolibc
+          persist-credentials: false
+
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build ccache clang lld meson
+          {
+            echo "CMAKE_HOST_ARGS<<EOF"
+            echo "-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+            echo "-DLLVM_USE_LINKER=lld -DLLVM_STATIC_LINK_CXX_STDLIB=ON"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Install packages (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja ccache meson
+          {
+            echo "CMAKE_HOST_ARGS<<EOF"
+            echo "-DCMAKE_OSX_DEPLOYMENT_TARGET=12.0"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-release-${{ matrix.platform }}-${{ env.LLVM_REF }}
+          restore-keys: ccache-release-${{ matrix.platform }}-
+
+      - name: Configure LLVM
+        run: |
+          # shellcheck disable=SC2086
+          cmake -G Ninja -S llvm-project/llvm -B build \
+            -DCMAKE_BUILD_TYPE=Release $CMAKE_HOST_ARGS \
+            -DLLVM_CCACHE_BUILD=ON \
+            -DLLVM_TARGETS_TO_BUILD="" \
+            -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=MIPSX \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF -DCLANG_INCLUDE_TESTS=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF
+
+      - name: Build LLVM
+        run: |
+          # shellcheck disable=SC2046
+          ninja -C build $(python3 mipsx-sdk/release/package.py --print-targets)
+          ccache --show-stats
+
+      - name: Package
+        run: |
+          python3 mipsx-sdk/release/package.py --llvm-build build \
+            --llvm-src llvm-project --picolibc picolibc \
+            --version "$VERSION" --platform "${{ matrix.platform }}" \
+            --work "$RUNNER_TEMP/release" --out dist
+
+      - name: Smoke test
+        run: mipsx-sdk/release/smoke-test.sh "dist/mipsx-toolchain-$VERSION-${{ matrix.platform }}.tar.xz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mipsx-toolchain-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: GitHub release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mipsx-toolchain-*
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat dist/*.sha256 > dist/SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "MIPS-X toolchain ${GITHUB_REF_NAME#v}" \
+            --notes "Clang, lld and the LLVM tools for MIPS-X with the mipsx-sdk run-time, picolibc, simulator and packer. See README.md in each archive." \
+            dist/*.tar.xz dist/SHA256SUMS
+
+  container:
+    name: Container image
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mipsx-toolchain-linux-*
+          path: dist
+          merge-multiple: true
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Image name
+        id: image
+        run: |
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/$owner/mipsx-toolchain" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: release/Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.name }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0 WITH LLVM-exception AND Apache-2.0 AND BSD-3-Clause
