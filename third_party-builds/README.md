@@ -74,40 +74,55 @@ passes at -Os and -O2, matching the host. Cycles per operation at -Os
 (-O2 is within 2%), and the time at the guessed 81 MHz (hardware.md;
 the simulator does not model cache misses, so these are lower bounds):
 
-| Operation | Cycles | at 81 MHz |
-|---|---|---|
-| RSA-1024 public, `i15` | 12.7 M | 0.16 s |
-| RSA-2048 public or PKCS#1 verify, `i15` / `i31` | 47.4 M / 40.4 M | 0.58 s / 0.50 s |
-| P-256 `mul` / `mulgen`, `p256_m15` | 56.2 M / 37.8 M | 0.69 s / 0.47 s |
-| P-256 ECDSA verify, `p256_m15` | 104 M | 1.28 s |
-| P-256 `mul`, `mulgen`, `prime_i15` | 119 M | 1.47 s |
-| P-256 ECDSA verify, `prime_i15` | 238 M | 2.94 s |
-| P-384 ECDSA verify, `prime_i15` | 701 M | 8.6 s |
-| X25519, `c25519_m15` | 28.4 M | 0.35 s |
+| Operation | Cycles | at 81 MHz | Before |
+|---|---|---|---|
+| RSA-1024 public, `i15` | 9.7 M | 0.12 s | 12.7 M |
+| RSA-2048 public or PKCS#1 verify, `i15` / `i31` | 37.4 M / 40.3 M | 0.46 s / 0.50 s | 47.4 M / 40.4 M |
+| P-256 `mul` / `mulgen`, `p256_m15` | 70.6 M / 46.8 M | 0.87 s / 0.58 s | 56.2 M / 37.8 M |
+| P-256 ECDSA verify, `p256_m15` | 123 M | 1.52 s | 104 M |
+| P-256 `mul`, `mulgen`, `prime_i15` | 89.2 M | 1.10 s | 119 M |
+| P-256 ECDSA verify, `prime_i15` | 179 M | 2.21 s | 238 M |
+| P-384 ECDSA verify, `prime_i15` | 519 M | 6.4 s | 701 M |
+| X25519, `c25519_m15` | 36.2 M | 0.45 s | 28.4 M |
+
+"Before" is llvm-project 6fd9ed531416 with the old `__mulsi3` (mipsx-sdk
+012492c). Since then the compiler multiplies inline with `mstep` when
+known bits show an operand fits in 17 bits or fewer (llvm-project
+d63693be8e1f), which helps the `i15` code (it masks its words with
+`0x7FFF`): RSA −21%, `prime_i15` −25%. And `__mulsi3` is now
+constant-time, always 32 steps (35 cycles, where it took 14 to 48
+depending on the operands), which costs the `m15` code 23–27%: their
+limbs come from memory, so the compiler cannot see that they are narrow,
+and every product still calls `__mulsi3`. Before, X25519 took 28.4 M
+cycles for the RFC 7748 inputs but 27.8 M for 9 × 9: the timing
+depended on the secret scalar. Now all three take 36.2 M.
 
 The public-key work of one TLS 1.2 handshake, with a two-certificate
 chain: ECDHE_RSA with RSA-2048 certificates and X25519, three RSA
-verifications and two X25519 multiplications, is about 200 M cycles
-(2.5 s; 7.4 s if the CPU runs at the crystal's 27 MHz); with P-256
-instead of X25519, 236 M (2.9 s). ECDHE_ECDSA with P-256 certificates
-is about 410 M (5 s), and a P-384 intermediate (common in ECDSA
-chains) adds 700 M (8.6 s), too slow. So the
+verifications and two X25519 multiplications, is about 185 M cycles
+(2.3 s; 6.8 s if the CPU runs at the crystal's 27 MHz); with P-256
+instead of X25519, 230 M (2.8 s). ECDHE_ECDSA with P-256 certificates
+is about 490 M (6 s), and a P-384 intermediate (common in ECDSA
+chains) adds 520 M (6.4 s), too slow. So the
 provisioning server should use RSA certificates (or ECDSA P-256 only),
 and the client could add X25519: `tls_client_min` sets only
 `br_ec_p256_m15`, which has neither X25519 nor P-384; `br_ec_all_m15`
 has both.
 
-Two-thirds of the elliptic-curve time is in `__mulsi3` (64% of a
-`p256_m15` multiplication, 71% of X25519: about 1.4 M calls of 25
-cycles for one P-256 `mul`, mostly its 16-step path). BearSSL's
-Karatsuba code for slow multipliers (`-DBR_SLOW_MUL15=1`) is 8% faster
-for P-256 and 4% for X25519 and also passes `pk_kat`.
-`-DBR_CT_MUL15=1` does nothing here: Clang removes the `| 0x80000000`
-that it relies on, since only the low 31 bits of the product are used.
-Note that `__mulsi3` is not constant-time (14 cycles when the first
-operand fits in 8 bits, 26 when it fits in 16, 30 or 48 otherwise),
-which leaks through code that multiplies secrets, such as the ECDHE
-key and `ghash_ctmul32` (the GCM key).
+Most of the `m15` time is `__mulsi3` (before the constant-time change,
+64% of a `p256_m15` multiplication and 71% of X25519: about 1.4 M calls
+for one P-256 `mul`). BearSSL's `MUL15(x, y)` promises 15-bit operands
+but does not show it: an experiment with `((x) & 0x7FFF) * (y)` in
+`inner.h` takes P-256 ECDSA verify to 75 M cycles (`mul` 40.8 M), inline
+and constant-time, but breaks `c25519_m15`, which passes wider operands
+to some `MUL15`s; a patch would have to check each use. BearSSL's
+Karatsuba code for slow multipliers (`-DBR_SLOW_MUL15=1`) was 8% faster
+for P-256 and 4% for X25519 with the old `__mulsi3`, and passes
+`pk_kat`. `-DBR_CT_MUL15=1` does nothing here: Clang removes the
+`| 0x80000000` that it relies on, since only the low 31 bits of the
+product are used. `__muldi3` (BearSSL's `i31`/`m31` code, `ghash_ctmul`)
+is still not constant-time: it skips terms when a high word or the top
+half of the low word of b is 0.
 
 ## Sizes
 
@@ -119,10 +134,16 @@ all components.
 
 | Component | -Os | -Os, no asserts | -Oz, no asserts | -O2, no asserts |
 |---|---|---|---|---|
-| lwIP (all of the above) | 103,247 | 82,345 | 80,361 | 99,329 |
+| lwIP (all of the above) | 103,295 | 82,381 | 80,361 | 99,365 |
 | littlefs | 50,566 | 44,192 | 42,524 | 50,308 |
-| BearSSL, minimal TLS 1.2 client | 88,227 | 88,227 | 85,739 | 106,327 |
+| BearSSL, minimal TLS 1.2 client | 89,411 | 89,411 | 85,739 | 107,559 |
 | BearSSL, `br_ssl_client_init_full` | 124,831 | 124,831 | 121,079 | 152,807 |
+
+The inline multiplications (llvm-project d63693be8e1f) add 1,184 bytes
+to the minimal client at -Os (1.3%), 1,232 at -O2, and 36–48 to lwIP;
+littlefs and `init_full` (its EC code is `m31`, 64-bit products) do not
+change. At -Oz the compiler keeps the calls, so nothing changes. The
+constant-time `__mulsi3` is 224 bytes smaller (in the run-time libraries).
 
 RAM: lwIP's `.bss` is 46 KB with this `lwipopts.h` (heap and pools);
 BearSSL's client needs `BR_SSL_BUFSIZE_BIDI` (about 33 KB) of I/O
