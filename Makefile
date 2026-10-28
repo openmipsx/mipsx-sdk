@@ -13,7 +13,11 @@
 #                 builds the run-time with llvm-mc and llvm-ar into a sysroot
 #                 for clang --target=mipsx (build/sysroot, or SYSROOT=dir):
 #                 lib/crt0.o, lib/{sim,device}.ld, lib/lib{sim,device}.a
-#                 (_exit), lib/libbuiltins.a (rt/builtins), include/
+#                 (_exit), lib/libbuiltins.a (rt/builtins, rt/atomic.c and
+#                 compiler-rt's generic builtins, compiled with the clang in
+#                 MIPSX_LLVM_BIN from COMPILER_RT, by default the
+#                 compiler-rt/lib/builtins of the llvm-project checkout that
+#                 MIPSX_LLVM_BIN was built from), include/
 #
 # Needs a C11 compiler and python3 (standard library only).
 
@@ -38,6 +42,31 @@ check-llvm: all
 SYSROOT ?= $(CURDIR)/build/sysroot
 RTOBJ := build/rt
 BUILTINS := $(patsubst rt/builtins/%.S,$(RTOBJ)/builtins/%.o,$(wildcard rt/builtins/*.S))
+BUILTINS += $(RTOBJ)/atomic.o
+
+# compiler-rt's generic builtins (its CMakeLists.txt GENERIC_SOURCES) for
+# soft-float, overflow checks, bit counting and so on. Left out: what
+# rt/builtins provides, the Apple- and trampoline-specific files, and the
+# 128-bit integer ones (MIPS-X has no __int128). long double is double, so
+# the GENERIC_TF_SOURCES are not needed either.
+COMPILER_RT ?= $(MIPSX_LLVM_BIN)/../../compiler-rt/lib/builtins
+CRT_SDK_PROVIDED := ashldi3 ashrdi3 lshrdi3 muldi3 divdi3 moddi3 udivdi3 \
+	umoddi3 divsi3 modsi3 udivsi3 umodsi3
+CRT_SOURCES := absvdi2 absvsi2 adddf3 addsf3 addvdi3 addvsi3 ashldi3 \
+	ashrdi3 bswapdi2 bswapsi2 clzdi2 clzsi2 cmpdi2 comparedf2 \
+	comparesf2 ctzdi2 ctzsi2 divdc3 divdf3 divdi3 divmoddi4 divmodsi4 \
+	divsc3 divsf3 divsi3 extendsfdf2 extendhfsf2 extendhfdf2 ffsdi2 \
+	ffssi2 fixdfdi fixdfsi fixsfdi fixsfsi fixunsdfdi fixunsdfsi \
+	fixunssfdi fixunssfsi floatdidf floatdisf floatsidf floatsisf \
+	floatundidf floatundisf floatunsidf floatunsisf fp_mode int_util \
+	lshrdi3 moddi3 modsi3 muldc3 muldf3 muldi3 mulodi4 mulosi4 mulsc3 \
+	mulsf3 mulvdi3 mulvsi3 negdf2 negdi2 negsf2 negvdi2 negvsi2 \
+	paritydi2 paritysi2 popcountdi2 popcountsi2 powidf2 powisf2 subdf3 \
+	subsf3 subvdi3 subvsi3 truncdfhf2 truncdfsf2 truncsfhf2 ucmpdi2 \
+	udivdi3 udivmoddi4 udivmodsi4 udivsi3 umoddi3 umodsi3
+CRT_OBJS := $(patsubst %,$(RTOBJ)/compiler-rt/%.o,$(filter-out $(CRT_SDK_PROVIDED),$(CRT_SOURCES)))
+BUILTINS += $(CRT_OBJS)
+RT_CFLAGS := --target=mipsx -O2 -ffreestanding -fno-builtin -Wall
 SYSROOT_FILES := $(SYSROOT)/lib/crt0.o $(SYSROOT)/lib/sim.ld \
 	$(SYSROOT)/lib/device.ld $(SYSROOT)/lib/libsim.a \
 	$(SYSROOT)/lib/libdevice.a $(SYSROOT)/lib/libbuiltins.a
@@ -49,6 +78,16 @@ $(RTOBJ)/%.o: rt/%.S
 	@test -n "$(MIPSX_LLVM_BIN)" || { echo "set MIPSX_LLVM_BIN to the directory holding llvm-mc and llvm-ar"; exit 1; }
 	@mkdir -p $(dir $@)
 	$(MIPSX_LLVM_BIN)/llvm-mc -triple=mipsx -filetype=obj $< -o $@
+
+$(RTOBJ)/atomic.o: rt/atomic.c
+	@test -n "$(MIPSX_LLVM_BIN)" || { echo "set MIPSX_LLVM_BIN to the directory holding clang"; exit 1; }
+	@mkdir -p $(dir $@)
+	$(MIPSX_LLVM_BIN)/clang $(RT_CFLAGS) -c $< -o $@
+
+$(RTOBJ)/compiler-rt/%.o: $(COMPILER_RT)/%.c
+	@test -n "$(MIPSX_LLVM_BIN)" || { echo "set MIPSX_LLVM_BIN to the directory holding clang"; exit 1; }
+	@mkdir -p $(dir $@)
+	$(MIPSX_LLVM_BIN)/clang $(RT_CFLAGS) -c $< -o $@
 
 $(SYSROOT)/lib/crt0.o: $(RTOBJ)/crt0.o
 	@mkdir -p $(dir $@)

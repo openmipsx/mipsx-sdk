@@ -872,9 +872,18 @@ or a load from a store-only one, and any other offset in the page.
 ### 13.6 Atomics and synchronisation
 
 There are no atomic instructions (manual Appendix I, item 4) and one CPU.
-Clang (S13) sets the maximum inline atomic width to 0, so `__atomic_*`
-and `__sync_*` become calls into the SDK, which implements them by
-masking interrupts.
+Clang (S13) sets the maximum inline atomic width to 0 and the backend
+(S14) runs LLVM's AtomicExpand, so `__atomic_*` and `__sync_*` operations
+become calls to libatomic-style functions (`__atomic_load_4`,
+`__atomic_fetch_add_2`, `__atomic_compare_exchange_8`, the generic
+`__atomic_load` and so on). `rt/atomic.c` in `libbuiltins.a` implements
+them by setting the PSW I bit around a plain access and restoring the PSW
+afterwards; every memory order is treated as `seq_cst`. The bit position
+comes from the manual and is unconfirmed for the ES3890 (§2.3), and in
+user state `movtos psw` does nothing, so there the functions are atomic
+only with respect to code that is not an interrupt handler. A fence emits
+no instruction: it is a compiler barrier, since memory accesses complete
+in order.
 
 ### 13.7 `setjmp` and `longjmp`
 

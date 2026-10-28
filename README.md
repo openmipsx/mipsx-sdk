@@ -42,7 +42,10 @@ flashing anything.
 the run-time with llvm-mc and llvm-ar into `build/sysroot` (or
 `SYSROOT=dir`): `lib/crt0.o`, `lib/sim.ld`, `lib/device.ld`,
 `lib/libsim.a` and `lib/libdevice.a` (`_exit`), `lib/libbuiltins.a` (the
-`rt/builtins` helpers) and an empty `include/`. Clang's MIPS-X driver
+`rt/builtins` helpers, the atomics of `rt/atomic.c` and compiler-rt's
+generic builtins: soft-float, overflow checks, bit counting; `COMPILER_RT`
+names the source, by default the checkout `MIPSX_LLVM_BIN` was built
+from) and an empty `include/`. Clang's MIPS-X driver
 links against it:
 
 ```
