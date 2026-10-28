@@ -20,6 +20,17 @@
 #   'exit #N' stores N to the exit register (clobbers r1).
 # Expressions: integers, labels (byte addresses), '.', + and -, and the
 # operators %hi() %lo() %w() of abi §10.6 (evaluated at assembly time).
+#
+# Sections and linking (for the run-time tests in rt/, work package S7):
+#   .text .data .bss .rodata and '.section NAME[,flags...]' switch output
+#   section (input names map to the output sections of rt/sim.ld, so
+#   .text.start goes to .text).  .set/.equ NAME,EXPR define symbols;
+#   .p2align/.balign align; .globl .global .weak .type .size .file are
+#   accepted and ignored (every symbol is global).  '.L' labels are local
+#   to their source file.  With several source files, or --link, the
+#   files are laid out like rt/sim.ld (link_layout below) and the
+#   linker-defined symbols of abi §13.1 are defined.  Without sections
+#   everything is in .text at --base, as before.
 
 import re
 import struct
@@ -41,9 +52,26 @@ SWAPPED = {"bgt": "blt", "ble": "bge", "bhi": "blo", "bls": "bhs"}
 ALU3 = {"add": 0x019, "sub": 0x066, "subnc": 0x026, "and": 0x023,
         "bic": 0x00B, "or": 0x03B, "xor": 0x01B}
 
+# Output sections in rt/sim.ld order; .sbss and .bss hold no file data.
+OUTPUT_SECTIONS = [".vectors", ".text", ".rodata", ".init_array", ".data",
+                   ".sdata", ".sbss", ".bss"]
+NOBITS = {".sbss", ".bss"}
+IGNORED_DIRECTIVES = {".globl", ".global", ".weak", ".type", ".size", ".file",
+                      ".ident"}
+
 
 class AsmError(Exception):
     pass
+
+
+def output_section(name):
+    """Maps an input section name to its output section, as rt/sim.ld."""
+    if name == ".scommon":
+        return ".sbss"
+    for out in OUTPUT_SECTIONS:
+        if name == out or name.startswith(out + "."):
+            return out
+    raise AsmError("section %s is not placed by the linker script" % name)
 
 
 def reg(tok):
@@ -99,10 +127,15 @@ def li_words(value, rd):
 
 
 class Assembler:
-    def __init__(self, base=0x2000):
+    def __init__(self, base=0x2000, bases=None, symbols=None):
         self.base = base
-        self.items = []      # (addr, kind, payload, lineno)
-        self.labels = {}
+        # Start address of each output section (link mode); .text at base.
+        self.bases = dict(bases or {})
+        self.bases.setdefault(".text", base)
+        self.sec = ".text"
+        self.pcs = {}        # output section -> current address
+        self.items = []      # (addr, kind, payload, lineno, section)
+        self.labels = dict(symbols or {})
         self.expects = []
         self.local_count = {}
 
@@ -171,8 +204,9 @@ class Assembler:
         return v
 
     # -- parsing -----------------------------------------------------------
-    def parse(self, text):
-        pc = self.base
+    def parse(self, text, fileno=0):
+        self.sec = ".text"
+        pc = self.pcs.get(self.sec, self.bases[self.sec])
         for lineno, raw in self.expand_rept(text):
             line = raw
             # strip comments (';' outside strings)
@@ -184,6 +218,8 @@ class Assembler:
                     break
                 out += ch
             line = out.strip()
+            # '.L' labels are local to their file
+            line = re.sub(r"(?<![\w.$])\.L(?=[\w.$])", ".L%d_" % fileno, line)
             while True:
                 m = re.match(r"(\d+)\s*:\s*(.*)$", line)
                 if m:  # numeric local label
@@ -204,6 +240,18 @@ class Assembler:
             parts = line.split(None, 1)
             mnem = parts[0].lower()
             ops = parts[1] if len(parts) > 1 else ""
+            if mnem in IGNORED_DIRECTIVES:
+                continue
+            if mnem in (".text", ".data", ".bss", ".rodata", ".section"):
+                name = mnem if mnem != ".section" else split_operands(ops)[0]
+                try:
+                    out_sec = output_section(name)
+                except AsmError as ex:
+                    raise AsmError("line %d: %s" % (lineno, ex))
+                self.pcs[self.sec] = pc
+                self.sec = out_sec
+                pc = self.pcs.get(out_sec, self.bases.get(out_sec, 0))
+                continue
 
             def local_ref(m):
                 n, d = m.group(1), m.group(2)
@@ -214,15 +262,28 @@ class Assembler:
                 pc = self.statement(mnem, ops, pc, lineno)
             except AsmError as ex:
                 raise AsmError("line %d: %s" % (lineno, ex))
+        self.pcs[self.sec] = pc
         if self.expects:
-            pc = (pc + 3) & ~3
+            self.sec = ".text"
+            pc = (self.pcs.get(".text", self.bases[".text"]) + 3) & ~3
             for (label, lineno) in self.expects:
                 self.labels[label] = pc
                 for m_, o_ in [("addi", "r0,#%d,r1" % (lineno & 0xFF)),
                                ("st", "%d[r0],r1" % IO_EXIT)]:
-                    self.items.append((pc, "insn", (m_, o_), lineno))
+                    self.add(pc, "insn", (m_, o_), lineno)
                     pc += 4
-        self.end = pc
+            self.pcs[".text"] = pc
+            self.expects = []
+        self.end = self.pcs.get(".text", self.bases[".text"])
+
+    def add(self, pc, kind, payload, lineno):
+        if self.sec in NOBITS and not (kind == "bytes" and not any(payload)):
+            raise AsmError("data in %s" % self.sec)
+        self.items.append((pc, kind, payload, lineno, self.sec))
+
+    def sizes(self):
+        """Size in bytes of each output section used."""
+        return {sec: pc - self.bases.get(sec, 0) for sec, pc in self.pcs.items()}
 
     def li_seq(self, expr, rd, pc):
         try:
@@ -254,23 +315,28 @@ class Assembler:
             if addr < pc:
                 raise AsmError(".org backwards")
             while pc < addr:
-                self.items.append((pc, "word", "0", lineno))
+                self.add(pc, "word", "0", lineno)
                 pc += 4
             return pc
         if mnem == ".word":
             for e in split_operands(ops):
-                self.items.append((pc, "word", e, lineno))
+                self.add(pc, "word", e, lineno)
                 pc += 4
             return pc
         if mnem == ".space":
             n = self.eval(ops, pc, True)
-            self.items.append((pc, "bytes", bytes(n), lineno))
+            self.add(pc, "bytes", bytes(n), lineno)
             return pc + n
-        if mnem == ".align":
-            a = 1 << self.eval(ops, pc, True)
+        if mnem in (".set", ".equ"):
+            a = split_operands(ops)
+            self.labels[a[0]] = self.eval(a[1], pc, False)
+            return pc
+        if mnem in (".align", ".p2align", ".balign"):
+            v = self.eval(split_operands(ops)[0], pc, True)
+            a = v if mnem == ".balign" else 1 << v
             n = (-pc) % a
             if n:
-                self.items.append((pc, "bytes", bytes(n), lineno))
+                self.add(pc, "bytes", bytes(n), lineno)
             return pc + n
         if mnem in (".ascii", ".asciz"):
             m = re.fullmatch(r'"(.*)"', ops.strip())
@@ -279,7 +345,7 @@ class Assembler:
             data = m.group(1).encode().decode("unicode_escape").encode("latin-1")
             if mnem == ".asciz":
                 data += b"\0"
-            self.items.append((pc, "bytes", data, lineno))
+            self.add(pc, "bytes", data, lineno)
             return pc + len(data)
         if pc & 3:
             raise AsmError("instruction at unaligned address 0x%x" % pc)
@@ -287,7 +353,7 @@ class Assembler:
         if mnem == "li":
             a = split_operands(ops)
             for m_, o_ in self.li_seq(a[0], reg(a[1]), pc):
-                self.items.append((pc, "insn", (m_, o_), lineno))
+                self.add(pc, "insn", (m_, o_), lineno)
                 pc += 4
             return pc
         if mnem == "la":
@@ -296,7 +362,7 @@ class Assembler:
             for m_, o_ in [("addi", "r0,#%%hi(%s),r%d" % (a[0], rd)),
                            ("lsl", "r%d,r%d,#15" % (rd, rd)),
                            ("addi", "r%d,#%%lo(%s),r%d" % (rd, a[0], rd))]:
-                self.items.append((pc, "insn", (m_, o_), lineno))
+                self.add(pc, "insn", (m_, o_), lineno)
                 pc += 4
             return pc
         if mnem == "expect":
@@ -306,16 +372,16 @@ class Assembler:
             seq = self.li_seq(a[1], 1, pc) + [("bne", "%s,r1,%s" % (a[0], label)),
                                         ("nop", ""), ("nop", "")]
             for m_, o_ in seq:
-                self.items.append((pc, "insn", (m_, o_), lineno))
+                self.add(pc, "insn", (m_, o_), lineno)
                 pc += 4
             return pc
         if mnem == "exit":
             value = self.eval(ops, pc, True)
             for m_, o_ in li_words(value, 1) + [("st", "%d[r0],r1" % IO_EXIT)]:
-                self.items.append((pc, "insn", (m_, o_), lineno))
+                self.add(pc, "insn", (m_, o_), lineno)
                 pc += 4
             return pc
-        self.items.append((pc, "insn", (mnem, ops), lineno))
+        self.add(pc, "insn", (mnem, ops), lineno)
         return pc + 4
 
     # -- encoding ----------------------------------------------------------
@@ -435,10 +501,13 @@ class Assembler:
             return 3 << 30 | 6 << 27 | ((~v & 0xFF) << 3) | 3
         raise AsmError("unknown mnemonic %r" % mnem)
 
-    def image(self):
-        img = bytearray(self.end - self.base)
-        for addr, kind, payload, lineno in self.items:
-            off = addr - self.base
+    def image(self, sec=".text"):
+        start = self.bases.get(sec, 0)
+        img = bytearray(self.pcs.get(sec, start) - start)
+        for addr, kind, payload, lineno, isec in self.items:
+            if isec != sec:
+                continue
+            off = addr - start
             try:
                 if kind == "insn":
                     w = self.encode(payload[0], payload[1], addr)
@@ -453,52 +522,96 @@ class Assembler:
         return bytes(img)
 
 
-def write_elf(path, base, image, entry, symbols, flags=1, machine=EM_MIPS_X,
-              data=2, etype=2):
-    """A minimal ET_EXEC: one PT_LOAD, .text, .symtab, .strtab, .shstrtab."""
+def write_elf_sections(path, sections, entry, symbols, flags=1,
+                       machine=EM_MIPS_X, data=2, etype=2):
+    """Writes an ET_EXEC with one PT_LOAD per section.  SECTIONS is a list
+    of (name, vaddr, paddr, contents, size); contents is None for a NOBITS
+    section.  Also .symtab, .strtab and .shstrtab."""
     end = ">" if data == 2 else "<"
-    shstr = b"\0.text\0.symtab\0.strtab\0.shstrtab\0"
+    ehsize, phentsize, shentsize = 52, 32, 40
+    shstr = bytearray(b"\0")
+
+    def shname(n):
+        off = len(shstr)
+        shstr.extend(n.encode() + b"\0")
+        return off
+
+    sec_names = [shname(s[0]) for s in sections]
+    n_symtab, n_strtab, n_shstr = shname(".symtab"), shname(".strtab"), \
+        shname(".shstrtab")
+
+    def shndx(value):
+        for i, (_, vaddr, _, _, size) in enumerate(sections):
+            if vaddr <= value < vaddr + size or (size == 0 and value == vaddr):
+                return i + 1
+        return 0xFFF1  # SHN_ABS
+
     strtab = bytearray(b"\0")
     syms = [bytes(16)]
-    for name, value in sorted(symbols.items(), key=lambda kv: kv[1]):
+    for name, value in sorted(symbols.items(), key=lambda kv: (kv[1], kv[0])):
         off = len(strtab)
         strtab += name.encode() + b"\0"
         # st_name, st_value, st_size, st_info (GLOBAL NOTYPE), st_other, st_shndx
-        syms.append(struct.pack(end + "IIIBBH", off, value, 0, 0x10, 0, 1))
+        syms.append(struct.pack(end + "IIIBBH", off, value & 0xFFFFFFFF, 0,
+                                0x10, 0, shndx(value)))
     symtab = b"".join(syms)
 
-    ehsize, phentsize, shentsize = 52, 32, 40
-    text_off = 0x100
-    sym_off = (text_off + len(image) + 3) & ~3
+    loads = [s for s in sections if s[4]]
+    pos = ehsize + phentsize * len(loads)
+    pos = (pos + 0xFF) & ~0xFF
+    offsets = []
+    for name, vaddr, paddr, contents, size in sections:
+        pos = (pos + 3) & ~3
+        offsets.append(pos)
+        if contents is not None:
+            pos += len(contents)
+    sym_off = (pos + 3) & ~3
     str_off = sym_off + len(symtab)
     shstr_off = str_off + len(strtab)
     sh_off = (shstr_off + len(shstr) + 3) & ~3
+    nsh = len(sections) + 4
 
     ident = b"\x7fELF" + bytes([1, data, 1, 0]) + bytes(8)
     ehdr = ident + struct.pack(end + "HHIIIIIHHHHHH", etype, machine, 1, entry,
-                               ehsize, sh_off, flags, ehsize, phentsize, 1,
-                               shentsize, 5, 4)
-    phdr = struct.pack(end + "IIIIIIII", 1, text_off, base, base, len(image),
-                       len(image), 7, 4)
-    shdrs = [bytes(shentsize),
-             struct.pack(end + "IIIIIIIIII", 1, 1, 6, base, text_off,
-                         len(image), 0, 0, 4, 0),
-             struct.pack(end + "IIIIIIIIII", 7, 2, 0, 0, sym_off, len(symtab),
-                         3, 1, 4, 16),
-             struct.pack(end + "IIIIIIIIII", 15, 3, 0, 0, str_off,
-                         len(strtab), 0, 0, 1, 0),
-             struct.pack(end + "IIIIIIIIII", 23, 3, 0, 0, shstr_off,
-                         len(shstr), 0, 0, 1, 0)]
-    out = bytearray(sh_off + shentsize * len(shdrs))
+                               ehsize, sh_off, flags, ehsize, phentsize,
+                               len(loads), shentsize, nsh, nsh - 1)
+    phdrs, shdrs = [], [bytes(shentsize)]
+    for i, (name, vaddr, paddr, contents, size) in enumerate(sections):
+        filesz = len(contents) if contents is not None else 0
+        pflags = 5 if name in (".text", ".vectors") else 6
+        if size:
+            phdrs.append(struct.pack(end + "IIIIIIII", 1, offsets[i], vaddr,
+                                     paddr, filesz, size, pflags, 4))
+        shflags = 6 if pflags == 5 else 3
+        shdrs.append(struct.pack(end + "IIIIIIIIII", sec_names[i],
+                                 1 if contents is not None else 8, shflags,
+                                 vaddr, offsets[i], size, 0, 0, 4, 0))
+    shdrs += [struct.pack(end + "IIIIIIIIII", n_symtab, 2, 0, 0, sym_off,
+                          len(symtab), len(sections) + 2, 1, 4, 16),
+              struct.pack(end + "IIIIIIIIII", n_strtab, 3, 0, 0, str_off,
+                          len(strtab), 0, 0, 1, 0),
+              struct.pack(end + "IIIIIIIIII", n_shstr, 3, 0, 0, shstr_off,
+                          len(shstr), 0, 0, 1, 0)]
+    out = bytearray(sh_off + shentsize * nsh)
     out[0:len(ehdr)] = ehdr
-    out[ehsize:ehsize + phentsize] = phdr
-    out[text_off:text_off + len(image)] = image
+    ph = b"".join(phdrs)
+    out[ehsize:ehsize + len(ph)] = ph
+    for i, s in enumerate(sections):
+        if s[3] is not None:
+            out[offsets[i]:offsets[i] + len(s[3])] = s[3]
     out[sym_off:sym_off + len(symtab)] = symtab
     out[str_off:str_off + len(strtab)] = strtab
     out[shstr_off:shstr_off + len(shstr)] = shstr
     out[sh_off:] = b"".join(shdrs)
     with open(path, "wb") as f:
         f.write(out)
+
+
+def write_elf(path, base, image, entry, symbols, flags=1, machine=EM_MIPS_X,
+              data=2, etype=2):
+    """A minimal ET_EXEC: one PT_LOAD for .text at BASE."""
+    write_elf_sections(path, [(".text", base, base, image, len(image))],
+                       entry, symbols, flags, machine, data, etype)
 
 
 def assemble_file(src_text, out_path, base=0x2000, **elf_kw):
@@ -512,20 +625,134 @@ def assemble_file(src_text, out_path, base=0x2000, **elf_kw):
     return asm
 
 
+def align(v, a):
+    return (v + a - 1) & -a
+
+
+def link_layout(sizes, text_base=0x2000, data_vma=None, ram_size=0x200000):
+    """Places output sections and defines the abi §13.1 symbols the way
+    rt/sim.ld (and rt/device.ld) do.  Returns ({section: (vma, lma)},
+    symbols).  DATA_VMA, if given, moves .data/.sdata to that run address
+    while their load address stays after .init_array, as an 'AT>' clause
+    would; the tests use it to check crt0's .data copy."""
+    place, sym = {}, {}
+    sz = lambda s: align(sizes.get(s, 0), 4)
+    if sizes.get(".vectors"):
+        place[".vectors"] = (0, 0)
+    pc = text_base
+    place[".text"] = (pc, pc)
+    sym["__text_start"] = pc
+    pc += sz(".text")
+    sym["__text_end"] = pc
+    pc = align(pc, 8)
+    place[".rodata"] = (pc, pc)
+    pc = align(pc + sz(".rodata"), 4)
+    place[".init_array"] = (pc, pc)
+    sym["__init_array_start"] = pc
+    pc += sz(".init_array")
+    sym["__init_array_end"] = pc
+    lma = align(pc, 8)
+    vma = lma if data_vma is None else data_vma
+    place[".data"] = (vma, lma)
+    sym["__data_start"] = vma
+    sym["__data_load"] = lma
+    vma += sz(".data")
+    lma += sz(".data")
+    place[".sdata"] = (vma, lma)
+    sym["__sdata_start"] = vma
+    vma += sz(".sdata")
+    sym["__data_end"] = vma
+    vma = align(vma, 8)
+    place[".sbss"] = (vma, vma)
+    sym["__bss_start"] = vma
+    vma += sz(".sbss")
+    place[".bss"] = (vma, vma)
+    vma = align(vma + sz(".bss"), 8)
+    sym["__bss_end"] = vma
+    sym["_end"] = max(vma, align(lma, 8))
+    sym["__mipsx_cb0"] = sym["__text_start"] + 0x40000
+    sym["__mipsx_cb1"] = sym["__mipsx_cb0"] + 0x80000
+    sym["_gp"] = (sym["__sdata_start"] if sizes.get(".sdata")
+                  else sym["__data_start"]) + 0x10000
+    sym["__stack_top"] = ram_size - 16
+    return place, sym
+
+
+def link(sources, out_path, text_base=0x2000, data_vma=None, bss_fill=None,
+         flags=1, names=None):
+    """Assembles SOURCES (a list of source texts) as one program laid out by
+    link_layout, and writes the ELF.  BSS_FILL, a byte value, makes the
+    ELF load that value over .sbss/.bss (as PROGBITS), so that tests can
+    see crt0 clear them."""
+    bases, syms = {}, {}
+    for _ in range(10):
+        asm = Assembler(text_base, bases, syms)
+        for i, text in enumerate(sources):
+            try:
+                asm.parse(text, i)
+            except AsmError as ex:
+                raise AsmError("%s: %s" % (names[i] if names else
+                                           "source %d" % (i + 1), ex))
+        place, new_syms = link_layout(asm.sizes(), text_base, data_vma)
+        new_bases = {s: v for s, (v, _) in place.items()}
+        if new_bases == bases and new_syms == syms:
+            break
+        bases, syms = new_bases, new_syms
+    else:
+        raise AsmError("layout did not converge")
+    sizes = asm.sizes()
+    sections = []
+    for sec in OUTPUT_SECTIONS:
+        if sec not in place or (sec not in sizes and sec != ".text"):
+            continue
+        vma, lma = place[sec]
+        size = sizes.get(sec, 0)
+        if sec in NOBITS:
+            contents = None if bss_fill is None else bytes([bss_fill]) * size
+        else:
+            contents = asm.image(sec)
+        sections.append((sec, vma, lma, contents, size))
+    if "_start" not in asm.labels:
+        raise AsmError("no _start")
+    symbols = {k: v for k, v in asm.labels.items()
+               if not k.startswith("__L") and not k.startswith("__expect")}
+    write_elf_sections(out_path, sections, asm.labels["_start"], symbols,
+                       flags)
+    return asm
+
+
 def main(argv):
     import argparse
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("source")
+    p.add_argument("sources", nargs="+")
     p.add_argument("-o", "--output", required=True)
     p.add_argument("--base", type=lambda s: int(s, 0), default=0x2000)
     p.add_argument("--flags", type=lambda s: int(s, 0), default=1)
+    p.add_argument("--link", action="store_true",
+                   help="lay out sections like rt/sim.ld (implied by "
+                   "several sources)")
+    p.add_argument("--data-vma", type=lambda s: int(s, 0),
+                   help="with --link: run address of .data (load address "
+                   "stays after .init_array)")
+    p.add_argument("--bss-fill", type=lambda s: int(s, 0),
+                   help="with --link: load this byte over .bss")
     args = p.parse_args(argv)
-    with open(args.source) as f:
-        text = f.read()
+    texts = []
+    for path in args.sources:
+        with open(path) as f:
+            texts.append(f.read())
     try:
-        assemble_file(text, args.output, args.base, flags=args.flags)
+        if args.link or len(texts) > 1:
+            link(texts, args.output, args.base, args.data_vma, args.bss_fill,
+                 args.flags, args.sources)
+        else:
+            try:
+                assemble_file(texts[0], args.output, args.base,
+                              flags=args.flags)
+            except AsmError as ex:
+                raise AsmError("%s: %s" % (args.sources[0], ex))
     except AsmError as ex:
-        sys.stderr.write("%s: %s\n" % (args.source, ex))
+        sys.stderr.write("mxasm: %s\n" % ex)
         return 1
     return 0
 

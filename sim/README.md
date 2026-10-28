@@ -193,6 +193,15 @@ the directives at its top (`; EXIT:`, `; STDOUT:`, `; STDERR:`,
 test: `python3 tests/run_tests.py --sim build/mipsx-sim --runner
 ./mipsx-run -v tests/alu.s`.
 
+It also takes several source files (or `--link`) and links them into
+one program the way `rt/sim.ld` would: `.text`, `.data`, `.bss`,
+`.rodata` and `.section` directives, `.set`, `.p2align`/`.balign`,
+file-local `.L` labels, and the linker-defined symbols of abi §13.1
+(`link_layout()`), with test options to run `.data` away from its load
+address (`--data-vma`) and to preload `.bss` with junk (`--bss-fill`).
+The tests in `rt/` and `tools/` use this to build programs with crt0
+until LLVM's assembler and lld support MIPS-X.
+
 The assembler is only for these tests; real programs use the LLVM tools.
 
 ## Not done yet
