@@ -51,6 +51,17 @@ SECTIONS
     __init_array_end = .;
   } > RAM
 
+  /* Destructors, run backwards by the C library's exit.  picolibc puts
+     the pointer to its atexit runner in .fini_array_onexit, which must
+     come last (so it runs first). */
+  .fini_array : ALIGN(4) {
+    __fini_array_start = .;
+    KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+    KEEP(*(.fini_array))
+    KEEP(*(.fini_array*))
+    __fini_array_end = .;
+  } > RAM
+
   .data : ALIGN(8) {
     __data_start = .;
     *(.data .data.*)
@@ -85,6 +96,11 @@ SECTIONS
   _gp = (SIZEOF(.sdata) > 0 ? __sdata_start : __data_start) + 0x10000;
   /* Top of RAM, 8-byte aligned; the simulator's reset sp is the same. */
   __stack_top = ORIGIN(RAM) + LENGTH(RAM) - 16;
+
+  /* malloc's heap (the C library's sbrk): from _end up to the 64 KB
+     kept for the stack. */
+  __heap_start = _end;
+  __heap_end = __stack_top - 0x10000;
 
   ASSERT(_end <= __stack_top - 0x10000,
          "sim.ld: program leaves less than 64 KB of RAM for the stack")

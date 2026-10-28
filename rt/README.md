@@ -30,11 +30,15 @@ calls our `_exit`.
 | Address | Content |
 |---|---|
 | 0x000000–0x001FFF | `.vectors` if a program has one (address 0 is the exception entry, trap n at n × 32). The device loader stub briefly uses 0x1FF0–0x1FFB |
-| 0x002000 | `.text` (crt0's `.text.start` first), `.rodata`, `.init_array`, `.data`, `.sdata`, `.sbss`, `.bss` |
+| 0x002000 | `.text` (crt0's `.text.start` first), `.rodata`, `.init_array`, `.fini_array`, `.data`, `.sdata`, `.sbss`, `.bss` |
+| `_end` to `__stack_top` − 64 KB | The C library's heap (`__heap_start`, `__heap_end`) |
 | `__stack_top` = 0x1FFFF0 | Initial sp, growing down; the scripts assert at least 64 KB between `_end` and it |
 
 `__mipsx_cb0` = `.text` + 0x40000, `__mipsx_cb1` = cb0 + 0x80000, `_gp` =
 `.sdata` (or `.data` if `.sdata` is empty) + 0x10000, as abi §13.1.
+`.fini_array` holds destructors and picolibc's `.fini_array_onexit`
+(its `atexit` runner), which `exit` runs.
+
 `.data` is not given a separate load address: the simulator and the
 device loader both put every segment at its load address in RAM, so
 `__data_load` = `__data_start` and crt0 skips the copy. The copy path is

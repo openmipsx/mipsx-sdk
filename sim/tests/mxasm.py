@@ -55,8 +55,8 @@ ALU3 = {"add": 0x019, "sub": 0x066, "subnc": 0x026, "and": 0x023,
         "bic": 0x00B, "or": 0x03B, "xor": 0x01B}
 
 # Output sections in rt/sim.ld order; .sbss and .bss hold no file data.
-OUTPUT_SECTIONS = [".vectors", ".text", ".rodata", ".init_array", ".data",
-                   ".sdata", ".sbss", ".bss"]
+OUTPUT_SECTIONS = [".vectors", ".text", ".rodata", ".init_array",
+                   ".fini_array", ".data", ".sdata", ".sbss", ".bss"]
 NOBITS = {".sbss", ".bss"}
 IGNORED_DIRECTIVES = {".globl", ".global", ".weak", ".type", ".size", ".file",
                       ".ident"}
@@ -635,7 +635,7 @@ def link_layout(sizes, text_base=0x2000, data_vma=None, ram_size=0x200000):
     """Places output sections and defines the abi §13.1 symbols the way
     rt/sim.ld (and rt/device.ld) do.  Returns ({section: (vma, lma)},
     symbols).  DATA_VMA, if given, moves .data/.sdata to that run address
-    while their load address stays after .init_array, as an 'AT>' clause
+    while their load address stays after .fini_array, as an 'AT>' clause
     would; the tests use it to check crt0's .data copy."""
     place, sym = {}, {}
     sz = lambda s: align(sizes.get(s, 0), 4)
@@ -653,6 +653,11 @@ def link_layout(sizes, text_base=0x2000, data_vma=None, ram_size=0x200000):
     sym["__init_array_start"] = pc
     pc += sz(".init_array")
     sym["__init_array_end"] = pc
+    pc = align(pc, 4)
+    place[".fini_array"] = (pc, pc)
+    sym["__fini_array_start"] = pc
+    pc += sz(".fini_array")
+    sym["__fini_array_end"] = pc
     lma = align(pc, 8)
     vma = lma if data_vma is None else data_vma
     place[".data"] = (vma, lma)
@@ -677,6 +682,8 @@ def link_layout(sizes, text_base=0x2000, data_vma=None, ram_size=0x200000):
     sym["_gp"] = (sym["__sdata_start"] if sizes.get(".sdata")
                   else sym["__data_start"]) + 0x10000
     sym["__stack_top"] = ram_size - 16
+    sym["__heap_start"] = sym["_end"]
+    sym["__heap_end"] = sym["__stack_top"] - 0x10000
     return place, sym
 
 
@@ -735,7 +742,7 @@ def main(argv):
                    "several sources)")
     p.add_argument("--data-vma", type=lambda s: int(s, 0),
                    help="with --link: run address of .data (load address "
-                   "stays after .init_array)")
+                   "stays after .fini_array)")
     p.add_argument("--bss-fill", type=lambda s: int(s, 0),
                    help="with --link: load this byte over .bss")
     args = p.parse_args(argv)

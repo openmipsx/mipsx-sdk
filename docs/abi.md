@@ -804,9 +804,12 @@ The default linker scripts (S7) define these. If a script does not, lld
 | `__bss_start`, `__bss_end` | | `.bss` and `.sbss` range to clear |
 | `__data_load`, `__data_start`, `__data_end` | | `.data` and `.sdata` initial image and destination, if they differ |
 | `__init_array_start`, `__init_array_end` | | Constructors |
+| `__fini_array_start`, `__fini_array_end` | | Destructors, run by the C library's `exit` (S15) |
+| `__heap_start`, `__heap_end` | `_end`, `__stack_top` − 64 KB | The C library's `sbrk` heap (S15) |
 
-Output section order: `.text`, `.rodata`, `.data`, `.sdata`, `.sbss`,
-`.bss`, with `.sdata`/`.sbss` together so `_gp` reaches both.
+Output section order: `.text`, `.rodata`, `.init_array`, `.fini_array`,
+`.data`, `.sdata`, `.sbss`, `.bss`, with `.sdata`/`.sbss` together so
+`_gp` reaches both.
 
 ### 13.2 Memory map
 
