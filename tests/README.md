@@ -18,9 +18,9 @@ git clone --filter=blob:none --depth 1 https://github.com/llvm/llvm-test-suite .
 ## Running
 
 ```
-make sysroot MIPSX_LLVM_BIN=~/src/openmipsx/llvm-project/build/bin
-python3 tests/run_tests.py torture --llvm-bin ~/src/openmipsx/llvm-project/build/bin
-python3 tests/run_tests.py builtins --llvm-bin ~/src/openmipsx/llvm-project/build/bin -O 2 -v
+make sysroot MIPSX_LLVM_BIN=$PWD/../llvm-project/build/bin
+python3 tests/run_tests.py torture --llvm-bin $PWD/../llvm-project/build/bin
+python3 tests/run_tests.py builtins --llvm-bin $PWD/../llvm-project/build/bin -O 2 -v
 ```
 
 | Option | Meaning |

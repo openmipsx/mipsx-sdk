@@ -4,7 +4,8 @@
 # Copyright 2026 The mipsx-sdk authors.
 # SPDX-License-Identifier: Apache-2.0
 #
-#   make MIPSX_LLVM_BIN=~/src/openmipsx/llvm-project/build/bin [OPT=-Os|-O2]
+#   make [MIPSX_LLVM_BIN=dir] [OPT=-Os|-O2]
+#                  (default ../llvm-project/build/bin, next to the SDK)
 #   make check     run the self-tests on the simulator
 #   make check-bearssl   run BearSSL's test vectors (slow)
 #   make sizes     build at -Os and -O2, with and without assertions, and

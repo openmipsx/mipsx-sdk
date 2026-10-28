@@ -13,7 +13,7 @@
 ## Making an archive locally
 
 ```
-python3 release/package.py --llvm-build ~/src/openmipsx/llvm-project/build --version 0.1
+python3 release/package.py --llvm-build ../llvm-project/build --version 0.1
 release/smoke-test.sh build/dist/mipsx-toolchain-0.1-linux-x86_64.tar.xz
 ```
 

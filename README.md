@@ -44,7 +44,8 @@ flashing anything.
 
 ## Compiling C with Clang
 
-`make sysroot MIPSX_LLVM_BIN=~/src/openmipsx/llvm-project/build/bin` builds
+`make sysroot MIPSX_LLVM_BIN=$PWD/../llvm-project/build/bin` (with the
+LLVM fork checked out next to this SDK) builds
 the run-time with llvm-mc and llvm-ar into `build/sysroot` (or
 `SYSROOT=dir`): `lib/crt0.o`, `lib/sim.ld`, `lib/device.ld`,
 `lib/libsim.a` and `lib/libdevice.a` (`_exit`), `lib/libbuiltins.a` (the
