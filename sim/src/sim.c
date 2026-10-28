@@ -28,6 +28,13 @@
 
 enum hazmode { HAZ_ERROR, HAZ_WARN, HAZ_OFF };
 
+#define DCACHE_SIZE 16384
+
+struct dcache {
+  struct insn in;
+  int valid;
+};
+
 struct cpu {
   uint32_t r[32];
   uint32_t md, psw;
@@ -60,6 +67,7 @@ struct cpu {
   uint32_t prev_pc;
 
   enum hazmode hz;
+  struct dcache dc[DCACHE_SIZE];
   FILE *trace;
   struct program prog;
   int exited;
@@ -73,7 +81,9 @@ static uint32_t bitr(unsigned r) { return r ? (1u << r) : 0; }
 static void where(const struct cpu *c, uint32_t pcw, char *buf, size_t n) {
   uint32_t addr = pcw * 4;
   const struct symbol *s = elf_symbolize(&c->prog, addr);
-  if (s && addr - s->addr < 0x100000)
+  if (s && addr == s->addr)
+    snprintf(buf, n, "pc 0x%08x <%s>", addr, s->name);
+  else if (s && addr - s->addr < 0x100000)
     snprintf(buf, n, "pc 0x%08x <%s+0x%x>", addr, s->name, addr - s->addr);
   else
     snprintf(buf, n, "pc 0x%08x", addr);
@@ -283,13 +293,14 @@ static uint32_t chain_rotate(struct cpu *c) {
 
 #define TRACE_EFFECT_LEN 96
 
-static void step(struct cpu *c) {
+/* Not inlined: main() calls setjmp, which would pessimise it. */
+__attribute__((noinline)) static void step(struct cpu *c) {
   uint32_t pcw = c->q[0];
   int squashed = c->sqd[0];
   int slot = c->slot[0];
   enum op owner_op = c->owner_op[0];
   uint32_t word = 0;
-  struct insn in;
+  const struct insn *in;
   char d[64], eff[TRACE_EFFECT_LEN];
   eff[0] = 0;
 
@@ -309,25 +320,33 @@ static void step(struct cpu *c) {
     sim_error(c, pcw, "instruction fetch from unmapped address 0x%08x",
               pcw * 4);
   }
-  if (have)
-    mx_decode(word, &in);
-  else
-    mx_decode(0x60000019u, &in);
+  if (!have)
+    word = 0x60000019u;
+  {
+    /* Direct-mapped decode cache, keyed by the instruction word so that
+     * stores into code are seen. */
+    struct dcache *e = &c->dc[pcw & (DCACHE_SIZE - 1)];
+    if (!e->valid || e->in.word != word) {
+      mx_decode(word, &e->in);
+      e->valid = 1;
+    }
+    in = &e->in;
+  }
 
   /* Static delay-slot rules (P3, §9.2).  The slots of jpc and jpcrs hold
    * the restarted instructions of an exception return (manual App. VI),
    * which may be anything, so they are exempt. */
-  if (slot && have && owner_op != OP_JPC && owner_op != OP_JPCRS) {
+  if (slot && have && owner_op != OP_JPC && owner_op != OP_JPCRS &&
+      ((in->flags & F_CTL) || (slot == 2 && (in->flags & F_LOAD)))) {
     char o[160];
     where(c, c->owner[0], o, sizeof o);
-    if (in.flags & F_CTL)
+    if (in->flags & F_CTL)
       hazard(c, pcw, "%s in delay slot %d of the %s at %s (P3)",
-             disas(pcw, &in, d, sizeof d), slot, mx_opname(c->owner_op[0]),
-             o + 3);
-    if (slot == 2 && (in.flags & F_LOAD))
+             disas(pcw, in, d, sizeof d), slot, mx_opname(owner_op), o + 3);
+    if (slot == 2 && (in->flags & F_LOAD))
       hazard(c, pcw, "load in the second delay slot of the %s at %s "
-             "(abi §9.2): %s", mx_opname(c->owner_op[0]), o + 3,
-             disas(pcw, &in, d, sizeof d));
+             "(abi §9.2): %s", mx_opname(owner_op), o + 3,
+             disas(pcw, in, d, sizeof d));
   }
   if (slot) {
     c->slots++;
@@ -355,64 +374,64 @@ static void step(struct cpu *c) {
     if (c->trace)
       fprintf(c->trace, "%10" PRIu64 " %08x: %08x  %-30s ; squashed\n",
               c->cycles - 1, pcw * 4, have ? word : 0,
-              have ? disas(pcw, &in, d, sizeof d) : "?");
+              have ? disas(pcw, in, d, sizeof d) : "?");
     return;
   }
 
-  if (in.op == OP_INVALID)
-    sim_error(c, pcw, "undefined instruction 0x%08x: %s", word, in.why);
-  if ((in.flags & F_ES3890) && !c->es3890)
+  if (in->op == OP_INVALID)
+    sim_error(c, pcw, "undefined instruction 0x%08x: %s", word, in->why);
+  if ((in->flags & F_ES3890) && !c->es3890)
     sim_error(c, pcw, "%s is an ES3890 instruction, but the program's "
-              "e_flags lack EF_MIPSX_ES3890", mx_opname(in.op));
+              "e_flags lack EF_MIPSX_ES3890", mx_opname(in->op));
 
   /* Dynamic hazards. */
-  if (c->load_reg && (in.reads & bitr((unsigned)c->load_reg))) {
+  if (c->load_reg && (in->reads & bitr((unsigned)c->load_reg))) {
     char lp[160];
     where(c, c->load_pc, lp, sizeof lp);
     hazard(c, pcw, "load-use hazard (P1): %s reads r%d, loaded by the "
-           "previous instruction at %s", disas(pcw, &in, d, sizeof d),
+           "previous instruction at %s", disas(pcw, in, d, sizeof d),
            c->load_reg, lp + 3);
   }
   if (c->md_prev == 1 &&
-      ((in.flags & F_MD) || (in.op == OP_MOVFRS && in.spec == SPEC_MD)))
+      ((in->flags & F_MD) || (in->op == OP_MOVFRS && in->spec == SPEC_MD)))
     hazard(c, pcw, "MD hazard (P4): %s right after movtos to md",
-           disas(pcw, &in, d, sizeof d));
-  if (c->md_prev == 2 && (in.op == OP_MOVFRS || in.op == OP_MOVTOS) &&
-      in.spec == SPEC_MD)
+           disas(pcw, in, d, sizeof d));
+  if (c->md_prev == 2 && (in->op == OP_MOVFRS || in->op == OP_MOVTOS) &&
+      in->spec == SPEC_MD)
     hazard(c, pcw, "MD hazard (P4): %s right after a multiply or divide "
-           "step", disas(pcw, &in, d, sizeof d));
-  if ((in.flags & F_LOAD) && in.dest && in.dest == in.src1)
+           "step", disas(pcw, in, d, sizeof d));
+  if ((in->flags & F_LOAD) && in->dest && in->dest == in->src1)
     hazard(c, pcw, "load overwrites its own address register r%u (P2): %s",
-           in.dest, disas(pcw, &in, d, sizeof d));
-  if (c->prev_store && (in.flags & F_MEM)) {
+           in->dest, disas(pcw, in, d, sizeof d));
+  if (c->prev_store && (in->flags & F_MEM)) {
     c->stalls++; /* P6: performance only */
     c->cycles++;
   }
 
   uint32_t *r = c->r;
-  uint32_t a = r[in.src1], b = r[in.src2];
+  uint32_t a = r[in->src1], b = r[in->src2];
   uint32_t res = 0;
-  int write = in.wreg;
+  int write = in->wreg;
   int new_load_reg = 0, new_md_prev = 0;
   int ctl = 0;            /* this instruction owns two delay slots */
   int redirect = 0;       /* the new queue entry is a jump target */
   uint32_t target = 0;
 
-  switch (in.op) {
+  switch (in->op) {
   case OP_LD: case OP_LDBU: case OP_LDB: case OP_LDHU: case OP_LDH: {
-    uint32_t addr = a + (uint32_t)in.imm;
-    res = mem_load(c, addr, &in, pcw);
+    uint32_t addr = a + (uint32_t)in->imm;
+    res = mem_load(c, addr, in, pcw);
     new_load_reg = write > 0 ? write : 0;
     if (c->trace)
       snprintf(eff, sizeof eff, "[0x%08x]", addr);
     break;
   }
   case OP_ST: case OP_STB: case OP_STH: {
-    uint32_t addr = a + (uint32_t)in.imm;
-    mem_store(c, addr, b, &in, pcw);
+    uint32_t addr = a + (uint32_t)in->imm;
+    mem_store(c, addr, b, in, pcw);
     if (c->trace) {
-      uint32_t m = in.size == 4 ? 0xFFFFFFFFu : (1u << (in.size * 8)) - 1;
-      snprintf(eff, sizeof eff, "[0x%08x] = 0x%0*x", addr, in.size * 2,
+      uint32_t m = in->size == 4 ? 0xFFFFFFFFu : (1u << (in->size * 8)) - 1;
+      snprintf(eff, sizeof eff, "[0x%08x] = 0x%0*x", addr, in->size * 2,
                b & m);
     }
     break;
@@ -420,7 +439,7 @@ static void step(struct cpu *c) {
   case OP_BEQ: case OP_BNE: case OP_BHS: case OP_BLO: case OP_BLT:
   case OP_BGE: {
     int taken;
-    switch (in.op) {
+    switch (in->op) {
     case OP_BEQ: taken = a == b; break;
     case OP_BNE: taken = a != b; break;
     case OP_BHS: taken = a >= b; break;
@@ -431,13 +450,13 @@ static void step(struct cpu *c) {
     ctl = 1;
     if (taken) {
       redirect = 1;
-      target = pcw + 2 + (uint32_t)in.imm;
-    } else if (in.sq) {
+      target = pcw + 2 + (uint32_t)in->imm;
+    } else if (in->sq) {
       c->sqd[0] = c->sqd[1] = 1;
     }
     if (c->trace)
       snprintf(eff, sizeof eff, taken ? "taken" :
-               in.sq ? "not taken, slots squashed" : "not taken");
+               in->sq ? "not taken, slots squashed" : "not taken");
     break;
   }
   case OP_ADD: res = a + b; break;
@@ -473,28 +492,28 @@ static void step(struct cpu *c) {
   }
   case OP_ROTLB:
   case OP_ROTLCB: {
-    unsigned k = (in.op == OP_ROTLB ? b : ~b) & 3;
+    unsigned k = (in->op == OP_ROTLB ? b : ~b) & 3;
     res = k ? (a << (8 * k)) | (a >> (32 - 8 * k)) : a;
     break;
   }
   case OP_SH: {
     uint64_t pair = (uint64_t)b << 32 | a;
-    res = (uint32_t)(pair >> in.imm);
+    res = (uint32_t)(pair >> in->imm);
     break;
   }
   case OP_ASR:
-    res = in.imm >= 32 ? (uint32_t)((int32_t)a >> 31)
-                       : (uint32_t)((int32_t)a >> in.imm);
+    res = in->imm >= 32 ? (uint32_t)((int32_t)a >> 31)
+                       : (uint32_t)((int32_t)a >> in->imm);
     break;
-  case OP_ADDI: res = a + (uint32_t)in.imm; break;
+  case OP_ADDI: res = a + (uint32_t)in->imm; break;
   case OP_JSPCI:
     ctl = 1;
     redirect = 1;
-    target = a + (uint32_t)in.imm;
+    target = a + (uint32_t)in->imm;
     res = pcw + 3;
     break;
   case OP_MOVFRS:
-    switch (in.spec) {
+    switch (in->spec) {
     case SPEC_PSW: res = c->psw; break;
     case SPEC_MD:
       res = c->md;
@@ -509,7 +528,7 @@ static void step(struct cpu *c) {
     }
     break;
   case OP_MOVTOS:
-    switch (in.spec) {
+    switch (in->spec) {
     case SPEC_PSW:
       if (!(c->psw & PSW_U))
         c->psw = (a & ~PSW_READONLY) | (c->psw & PSW_READONLY);
@@ -549,9 +568,9 @@ static void step(struct cpu *c) {
     c->sqd[0] = c->sqd[1] = 1;
     c->slot[0] = c->slot[1] = 0;
     redirect = 1;
-    target = in.vector * 8;
+    target = in->vector * 8;
     if (c->trace)
-      snprintf(eff, sizeof eff, "-> vector %u", in.vector);
+      snprintf(eff, sizeof eff, "-> vector %u", in->vector);
     break;
   case OP_HSC:
     r[31] = pcw;
@@ -561,7 +580,7 @@ static void step(struct cpu *c) {
     sim_error(c, pcw, "internal error: unhandled instruction");
   }
 
-  if ((in.flags & F_MD) && c->trace)
+  if ((in->flags & F_MD) && c->trace)
     snprintf(eff + strlen(eff), sizeof eff - strlen(eff), "md = 0x%08x ",
              c->md);
   if (write > 0) {
@@ -575,9 +594,9 @@ static void step(struct cpu *c) {
     c->slot[0] = 1;
     c->slot[1] = 2;
     c->owner[0] = c->owner[1] = pcw;
-    c->owner_op[0] = c->owner_op[1] = in.op;
+    c->owner_op[0] = c->owner_op[1] = in->op;
   }
-  if (redirect && c->trace && in.op != OP_TRAP && !(in.flags & F_BRANCH))
+  if (redirect && c->trace && in->op != OP_TRAP && !(in->flags & F_BRANCH))
     snprintf(eff + strlen(eff), sizeof eff - strlen(eff), "%s-> 0x%08x",
              eff[0] ? " " : "", target * 4);
   c->q[2] = redirect ? target : next;
@@ -587,18 +606,45 @@ static void step(struct cpu *c) {
   c->load_pc = pcw;
   c->md_prev = new_md_prev;
   c->md_prev_pc = pcw;
-  c->prev_store = (in.flags & F_STORE) != 0;
+  c->prev_store = (in->flags & F_STORE) != 0;
   c->prev_pc = pcw;
 
   if (c->trace)
     fprintf(c->trace, "%10" PRIu64 " %08x: %08x  %-30s %s%s\n",
-            c->cycles - 1, pcw * 4, word, disas(pcw, &in, d, sizeof d),
+            c->cycles - 1, pcw * 4, word, disas(pcw, in, d, sizeof d),
             eff[0] ? "; " : "", eff);
   if (c->exited)
     halt(c, c->exit_code & 0xFF);
 }
 
 /* ---- Driver ------------------------------------------------------------- */
+
+/* Prints the disassembly of the executable segments (all segments if none
+ * is marked executable). */
+static void disassemble(const struct cpu *c) {
+  const struct program *p = &c->prog;
+  int any_exec = 0;
+  for (unsigned i = 0; i < p->nsegs; i++)
+    any_exec |= p->segs[i].exec;
+  for (unsigned i = 0; i < p->nsegs; i++) {
+    const struct segment *sg = &p->segs[i];
+    if (any_exec && !sg->exec)
+      continue;
+    for (uint32_t a = (sg->addr + 3) & ~3u; a + 4 <= sg->addr + sg->size;
+         a += 4) {
+      const struct symbol *s = elf_symbolize(p, a);
+      if (s && s->addr == a)
+        for (const struct symbol *t = s; t >= p->syms && t->addr == a; t--)
+          printf("%s:\n", t->name);
+      uint32_t w = 0;
+      struct insn in;
+      char d[64];
+      fetch((struct cpu *)c, a / 4, &w);
+      mx_decode(w, &in);
+      printf("%08x: %08x  %s\n", a, w, disas(a / 4, &in, d, sizeof d));
+    }
+  }
+}
 
 static void usage(FILE *f) {
   fprintf(f,
@@ -620,6 +666,7 @@ static void usage(FILE *f) {
     "  -w, --warn-hazards      same as --hazards=warn\n"
     "  -m, --mem-size=BYTES    size of RAM at address 0 (default 0x200000)\n"
     "  -s, --stats             print cycle and instruction counts at exit\n"
+    "  -d, --disassemble       print the program's code and exit\n"
     "  -h, --help              show this help\n"
     "  -V, --version           show the version\n");
 }
@@ -638,6 +685,7 @@ int main(int argc, char **argv) {
   struct cpu *c = &cpu;
   uint64_t memsize = 0x200000, maxc = 1000000000ull;
   volatile int stats = 0;
+  int dis = 0;
   const char *trace_file = NULL;
   int trace = 0;
   static const struct option opts[] = {
@@ -648,13 +696,14 @@ int main(int argc, char **argv) {
     {"warn-hazards", no_argument, 0, 'w'},
     {"mem-size", required_argument, 0, 'm'},
     {"stats", no_argument, 0, 's'},
+    {"disassemble", no_argument, 0, 'd'},
     {"help", no_argument, 0, 'h'},
     {"version", no_argument, 0, 'V'},
     {0, 0, 0, 0},
   };
   int o;
   c->hz = HAZ_ERROR;
-  while ((o = getopt_long(argc, argv, "tc:wm:shV", opts, NULL)) != -1) {
+  while ((o = getopt_long(argc, argv, "tc:wm:sdhV", opts, NULL)) != -1) {
     switch (o) {
     case 't': trace = 1; break;
     case 'T': trace_file = optarg; break;
@@ -683,6 +732,7 @@ int main(int argc, char **argv) {
       }
       break;
     case 's': stats = 1; break;
+    case 'd': dis = 1; break;
     case 'h': usage(stdout); return 0;
     case 'V': printf("mipsx-sim %s\n", SIM_VERSION); return 0;
     default: usage(stderr); return EXIT_LOAD_ERROR;
@@ -701,6 +751,10 @@ int main(int argc, char **argv) {
   }
   if (elf_load(argv[optind], c->mem, c->memsize, &c->prog))
     return EXIT_LOAD_ERROR;
+  if (dis) {
+    disassemble(c);
+    return 0;
+  }
   c->es3890 = (c->prog.flags & EF_MIPSX_ES3890) != 0;
   c->max_cycles = maxc;
   if (trace_file) {

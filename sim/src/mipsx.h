@@ -106,9 +106,18 @@ struct symbol {
   const char *name;
 };
 
+struct segment {
+  uint32_t addr, size; /* load (physical) address and memory size */
+  int exec;            /* PF_X */
+};
+
+#define MAX_SEGMENTS 16
+
 struct program {
   uint32_t entry;
   uint32_t flags;
+  struct segment segs[MAX_SEGMENTS];
+  unsigned nsegs;
   struct symbol *syms;
   size_t nsyms;
   char *strtab;

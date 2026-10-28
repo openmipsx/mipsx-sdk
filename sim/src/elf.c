@@ -189,6 +189,12 @@ int elf_load(const char *path, uint8_t *mem, uint32_t memsize,
       fail(path, msg);
       goto out;
     }
+    if (prog->nsegs < MAX_SEGMENTS) {
+      struct segment *sg = &prog->segs[prog->nsegs++];
+      sg->addr = paddr;
+      sg->size = memsz;
+      sg->exec = (be32(ph + 24) & 1) != 0;
+    }
     memcpy(mem + paddr, f + off, filesz);
     memset(mem + paddr + filesz, 0, memsz - filesz);
   }
