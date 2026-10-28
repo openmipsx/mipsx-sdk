@@ -36,6 +36,25 @@ spec. See [`rt/README.md`](rt/README.md) and
 [`tools/README.md`](tools/README.md), which lists what to confirm before
 flashing anything.
 
+## Compiling C with Clang
+
+`make sysroot MIPSX_LLVM_BIN=~/src/mipsx/llvm-project/build/bin` builds
+the run-time with llvm-mc and llvm-ar into `build/sysroot` (or
+`SYSROOT=dir`): `lib/crt0.o`, `lib/sim.ld`, `lib/device.ld`,
+`lib/libsim.a` and `lib/libdevice.a` (`_exit`), `lib/libbuiltins.a` (the
+`rt/builtins` helpers) and an empty `include/`. Clang's MIPS-X driver
+links against it:
+
+```
+clang --target=mipsx --sysroot=build/sysroot -O2 hello.c -o hello
+sim/build/mipsx-sim hello
+```
+
+`-mboard=device` links with `device.ld` and `libdevice.a` instead of
+the simulator's files (`-T script` overrides the linker script). Without
+`--sysroot`, Clang looks in `<bin>/../lib/clang-runtimes/mipsx`. There
+is no C library yet: a `lib/libc.a` in the sysroot is linked if present.
+
 This is clean-room work: it is written from public documentation and
 from specifications that contain facts only, never from the vendor's
 firmware.

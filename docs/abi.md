@@ -394,6 +394,13 @@ the order above. Clang (S13) passes small aggregates as `[N x i32]`
 (direct) and large ones indirectly (not `byval`), and marks narrow
 integer arguments `signext` or `zeroext`.
 
+S13 settled the cases the table leaves open: complex numbers and
+`_BitInt(N)` with N > 64 are aggregates of their size; a one-word
+aggregate is `i32` rather than `[1 x i32]`; a C++ class that cannot be
+passed in registers (non-trivial copy or destructor) is passed by
+reference like a large aggregate; `_BitInt(N)` up to 32 bits is extended
+like an integer of its signedness.
+
 ### 7.2 Variadic functions
 
 Arguments that match the `...` of a variadic function are **always
