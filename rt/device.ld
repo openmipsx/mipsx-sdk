@@ -14,7 +14,8 @@
  * the end.  The stack top, 0x1FFFF0, is the value the stock images put
  * in their packed header (format spec §4.1).
  *
- * Not yet link-tested: lld does not support MIPS-X until work package S5.
+ * Linked with ld.lld, packed and verified by rt/tests/test_llvm.py
+ * (make check-llvm).
  *
  * Use: ld.lld -T device.ld crt0.o exit-device.o prog.o -o prog
  *      mipsx-pack prog -o prog.bin --version 9.0.0

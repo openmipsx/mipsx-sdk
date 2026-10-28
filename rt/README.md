@@ -12,7 +12,7 @@ Work package S7 of the LLVM backend plan. Implements `docs/abi.md` §13.
 | `builtins/` | Multiply, divide and variable-shift helpers for the code generator (`__mulsi3`, `__divdi3`, `__ashldi3`, ...); see `builtins/README.md` |
 | `tests/` | `crt0_main.s` (checks what crt0 set up, prints, returns 42) and `test_rt.py`; `test_builtins.py` checks the helpers against a Python reference |
 
-Linking, once lld supports MIPS-X (S5):
+Linking with the LLVM tools:
 
 ```
 llvm-mc -triple=mipsx -filetype=obj crt0.S -o crt0.o      # likewise exit-*.S
@@ -44,12 +44,15 @@ still tested by moving `.data` (mxasm `--data-vma`).
 
 - `crt0.S` runs on the simulator with no hazard reports, assembled and
   laid out by `sim/tests/mxasm.py` (`make check` at the top level).
-- **The linker scripts are not link-tested**: lld does not support MIPS-X
-  until S5. `mxasm.link_layout()` mirrors `sim.ld` for the tests; when S5
-  lands, link `tests/crt0_main.s` with lld and both scripts, compare the
-  symbol values with `link_layout()`, and run the result. Points to check
-  then: lld must not put the ELF headers in a PT_LOAD (it should not,
-  since nothing is free below 0x2000 at page alignment), `SIZEOF(.sdata)`
-  in the `_gp` expression with an empty `.sdata`, and `NOLOAD` `.sbss`.
+- Both linker scripts link with ld.lld (`make check-llvm
+  MIPSX_LLVM_BIN=.../llvm-project/build/bin`, `tests/test_llvm.py`):
+  crt0, the exit routines and `tests/crt0_main.s` are assembled with
+  llvm-mc, and every section address and abi §13.1 symbol matches
+  `mxasm.link_layout()`, with and without `.sdata`/`.sbss` contents. The
+  simulator build runs (42, no hazards); the device build packs and passes
+  `tools/mipsx_verify.py`. lld puts no ELF headers in a PT_LOAD, and
+  `NOLOAD` `.sbss` and the `SIZEOF(.sdata)` test in `_gp` work. The
+  helpers in `builtins/` assemble with llvm-mc. The other `rt/` tests
+  still link with `mxasm.link_layout()`.
 - Overflow traps: crt0 does not touch PSW, because the ES3890's PSW
   layout is unconfirmed (abi §2.3, §13.3).

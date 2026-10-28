@@ -10,9 +10,9 @@
  * the top of RAM.  The simulator loads every PT_LOAD segment at its load
  * address, so .data runs where it is loaded and crt0 does not copy it.
  *
- * Not yet link-tested: lld does not support MIPS-X until work package S5.
- * Until then sim/tests/mxasm.py's link_layout() mirrors this script for
- * the rt/ tests; keep the two in step.
+ * Linked with ld.lld by rt/tests/test_llvm.py (make check-llvm), which
+ * checks the result against sim/tests/mxasm.py's link_layout().  The other
+ * rt/ tests use link_layout() in place of the linker; keep the two in step.
  *
  * Use: ld.lld -T sim.ld crt0.o exit-sim.o prog.o -o prog
  */
