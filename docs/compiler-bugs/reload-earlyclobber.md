@@ -3,6 +3,11 @@
 Found in S15 (picolibc). llvm-project `mipsx` at 67d0924e3e53 (plus S14's
 uncommitted work in progress), assertions on.
 
+**Status: fixed** in llvm-project 8530b3a411c7 (S14, "Reload spills
+without the early-clobber of ld": reloads use `LDfi`, an `ld` without
+the constraint). With it, `reload-earlyclobber.c` passes
+`-verify-regalloc` and `strptime_l.c` compiles at `-O2`.
+
 ## Symptom
 
 `libc/time/strptime_l.c` from picolibc crashes Clang at `-O2` and `-O3`
