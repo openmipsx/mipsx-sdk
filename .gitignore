@@ -1,0 +1,14 @@
+# Build output
+/build/
+/out/
+*.o
+*.a
+*.elf
+*.bin
+*.img
+*.map
+
+# Editor and OS files
+*~
+*.swp
+.DS_Store
