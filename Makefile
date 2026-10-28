@@ -18,8 +18,12 @@
 #                 MIPSX_LLVM_BIN from COMPILER_RT, by default the
 #                 compiler-rt/lib/builtins of the llvm-project checkout that
 #                 MIPSX_LLVM_BIN was built from), include/
+#   make libc, make check-libc
+#                 build picolibc into the sysroot and run its tests on the
+#                 simulator (libc.mk, docs/picolibc.md)
 #
-# Needs a C11 compiler and python3 (standard library only).
+# Needs a C11 compiler and python3 (standard library only); make libc
+# also needs meson.
 
 PYTHON ?= python3
 MIPSX_LLVM_BIN ?=
@@ -97,9 +101,17 @@ $(SYSROOT)/lib/%.ld: rt/%.ld
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-$(SYSROOT)/lib/libsim.a: $(RTOBJ)/exit-sim.o
+# Once picolibc is installed (make libc), libsim.a also carries its
+# simulator stdio, libsemihost.a.
+$(SYSROOT)/lib/libsim.a: $(RTOBJ)/exit-sim.o $(wildcard $(SYSROOT)/lib/libsemihost.a)
 	@mkdir -p $(dir $@)
-	rm -f $@ && $(MIPSX_LLVM_BIN)/llvm-ar rcs $@ $^
+	rm -f $@ && $(MIPSX_LLVM_BIN)/llvm-ar rcs $@ $<
+	if [ -f $(SYSROOT)/lib/libsemihost.a ]; then \
+	  rm -rf $(RTOBJ)/semihost && mkdir -p $(RTOBJ)/semihost && \
+	  (cd $(RTOBJ)/semihost && \
+	   $(MIPSX_LLVM_BIN)/llvm-ar x $(SYSROOT)/lib/libsemihost.a) && \
+	  $(MIPSX_LLVM_BIN)/llvm-ar rcs $@ $(RTOBJ)/semihost/*.o; \
+	fi
 
 $(SYSROOT)/lib/libdevice.a: $(RTOBJ)/exit-device.o
 	@mkdir -p $(dir $@)
@@ -108,6 +120,8 @@ $(SYSROOT)/lib/libdevice.a: $(RTOBJ)/exit-device.o
 $(SYSROOT)/lib/libbuiltins.a: $(BUILTINS)
 	@mkdir -p $(dir $@)
 	rm -f $@ && $(MIPSX_LLVM_BIN)/llvm-ar rcs $@ $^
+
+include libc.mk
 
 clean:
 	rm -rf build

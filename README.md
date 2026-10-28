@@ -13,6 +13,9 @@ Contents:
 | `rt/` | Start-up code (`crt0.S`) and linker scripts for the simulator and the device |
 | `tools/` | `mipsx_pack.py` turns a linked ELF into an SPA3000 upgrade image; `mipsx_verify.py` checks one |
 | `tests/` | C execution tests on the simulator: compiler-rt's builtins tests and the GCC C torture suite (`run_tests.py`) |
+| `meson/`, `cmake/` | A Meson cross file and a CMake toolchain file for Clang and this SDK |
+| `docs/picolibc.md` | The C library: building picolibc into the sysroot and running its tests |
+| `docs/compiler-bugs/` | Reproducers for compiler bugs found while using the SDK |
 
 `make` builds the simulator; `make check` runs the simulator, crt0 and
 packer tests (needs a C compiler and python3).
@@ -56,8 +59,16 @@ sim/build/mipsx-sim hello
 
 `-mboard=device` links with `device.ld` and `libdevice.a` instead of
 the simulator's files (`-T script` overrides the linker script). Without
-`--sysroot`, Clang looks in `<bin>/../lib/clang-runtimes/mipsx`. There
-is no C library yet: a `lib/libc.a` in the sysroot is linked if present.
+`--sysroot`, Clang looks in `<bin>/../lib/clang-runtimes/mipsx`.
+
+## C library
+
+`make libc MIPSX_LLVM_BIN=...` builds picolibc (a clone on branch
+`mipsx` in `../picolibc`) with Meson and installs its headers and
+`lib/libc.a` into the sysroot, which Clang then links; on the simulator
+stdio uses the I/O page. `make check-libc` runs picolibc's tests on the
+simulator. `meson/mipsx.txt` and `cmake/mipsx.cmake` set up other
+projects. See [`docs/picolibc.md`](docs/picolibc.md).
 
 This is clean-room work: it is written from public documentation and
 from specifications that contain facts only, never from the vendor's
