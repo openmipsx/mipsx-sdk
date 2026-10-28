@@ -436,6 +436,11 @@ convention like any other function. S12 may document a cheaper private
 convention for some of them (for example one that preserves more
 registers); if it does, it goes in this section.
 
+S12 (SDK half) did: `rt/builtins/README.md` lists the registers each
+helper actually changes (all within the standard set) and two extra
+results, the remainder of `__udivsi3` in r3 and of `__udivdi3` in
+r4:r5. Division by zero returns quotient 0 and remainder n.
+
 ## 8. Stack frame
 
 ### 8.1 Layout
