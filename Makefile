@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 #   make          builds the simulator (sim/build/mipsx-sim)
-#   make check    simulator tests, crt0 tests (rt/) and packer tests (tools/)
+#   make check    simulator tests, crt0 and helper tests (rt/) and packer
+#                 tests (tools/)
 #
 # Needs a C11 compiler and python3 (standard library only).
 

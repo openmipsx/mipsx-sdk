@@ -9,7 +9,8 @@ Work package S7 of the LLVM backend plan. Implements `docs/abi.md` §13.
 | `exit-device.S` | `_exit` (and weak `exit`) for the device: stops in a loop (how to reset the ES3890 is not known yet) |
 | `sim.ld` | Linker script for `mipsx-sim` |
 | `device.ld` | Linker script for the SPA3000; its output goes to `tools/mipsx_pack.py` |
-| `tests/` | `crt0_main.s` (checks what crt0 set up, prints, returns 42) and `test_rt.py` |
+| `builtins/` | Multiply, divide and variable-shift helpers for the code generator (`__mulsi3`, `__divdi3`, `__ashldi3`, ...); see `builtins/README.md` |
+| `tests/` | `crt0_main.s` (checks what crt0 set up, prints, returns 42) and `test_rt.py`; `test_builtins.py` checks the helpers against a Python reference |
 
 Linking, once lld supports MIPS-X (S5):
 
