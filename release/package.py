@@ -33,16 +33,17 @@ import tarfile
 SDK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Ninja targets to build, and install components.  The symlink tools
-# (llvm-ranlib, llvm-readelf, llvm-strip, llvm-addr2line, clang-cpp) come
-# with their targets but are installed as components of their own.
+# (llvm-ranlib, llvm-readelf, llvm-strip, llvm-addr2line) come with their
+# targets but are installed as components of their own.  clang++ and
+# clang-cpp are installed with clang; the 'clang-cpp' component is the
+# libclang-cpp shared library, which is not built.
 TARGETS = [
     "clang", "lld", "clang-resource-headers", "llvm-mc", "llvm-objdump",
     "llvm-readobj", "llvm-ar", "llvm-nm", "llvm-objcopy", "llvm-size",
     "llvm-symbolizer", "llvm-dwarfdump", "llvm-cxxfilt",
 ]
 COMPONENTS = TARGETS + [
-    "clang-cpp", "llvm-ranlib", "llvm-readelf", "llvm-strip",
-    "llvm-addr2line",
+    "llvm-ranlib", "llvm-readelf", "llvm-strip", "llvm-addr2line",
 ]
 
 # Installed with clang and lld, but of no use for MIPS-X.
