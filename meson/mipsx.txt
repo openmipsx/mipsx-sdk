@@ -1,0 +1,41 @@
+# Meson cross file for MIPS-X (the ES3890) with Clang and the mipsx-sdk.
+#
+# Copyright 2026 The mipsx-sdk authors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Needs three constants from a cross file given before this one:
+#
+#   [constants]
+#   llvm_bin = '/path/to/llvm-project/build/bin'   # clang, ld.lld, llvm-ar
+#   sdk = '/path/to/mipsx-sdk'                     # for sim/mipsx-run
+#   sysroot = '/path/to/mipsx-sdk/build/sysroot'   # make sysroot
+#
+# 'make meson-paths' writes one as build/meson-paths.txt:
+#
+#   meson setup --cross-file build/meson-paths.txt \
+#       --cross-file meson/mipsx.txt build-dir
+#
+# Clang's MIPS-X driver links the sysroot's crt0.o, linker script
+# (sim.ld, or device.ld with -mboard=device), libbuiltins.a, the board's
+# libsim.a or libdevice.a and libc.a, so programs need no extra link
+# arguments.  'meson test' runs programs on the simulator.
+
+[binaries]
+c = [llvm_bin / 'clang', '--target=mipsx', '--sysroot=' + sysroot]
+ar = llvm_bin / 'llvm-ar'
+nm = llvm_bin / 'llvm-nm'
+strip = llvm_bin / 'llvm-strip'
+objcopy = llvm_bin / 'llvm-objcopy'
+exe_wrapper = sdk / 'sim/mipsx-run'
+
+[host_machine]
+system = 'none'
+cpu_family = 'mipsx'
+cpu = 'es3890'
+endian = 'big'
+
+[properties]
+# For picolibc (mipsx-sdk docs/picolibc.md): its tests link with the
+# driver's start-up code, linker script and libraries, and with the
+# libc.a just built rather than the sysroot's.
+test_runtime_link_args = ['-nolibc']
