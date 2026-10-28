@@ -43,7 +43,10 @@ Contents:
 - Code is word-addressed (PC, branch displacements, `jspci` targets,
   return addresses); data is byte-addressed (spec §1).
 - Two delay slots after every branch and jump; branches can squash them
-  (spec §4). `jspci`, `jpc`, `jpcrs` and `trap` never squash.
+  (spec §4). `jspci`, `jpc` and `jpcrs` never squash.
+- `trap` has no delay slots: the instruction after it does not execute
+  before the handler, which restarts it on return (manual Appendix VI,
+  Figure VI-2). The simulator gives `trap` two bubbles.
 - No interlocks: one load delay slot, and other rules in §9.
 - Immediates are 17-bit signed (−65536 to 65535). Branch displacements
   are 16-bit signed words.
@@ -113,6 +116,12 @@ call clobbers it.
 
 User code never writes `psw`. Only exception and interrupt handlers use
 the PC chain.
+
+The bit layout of the PSW (manual §2.4, Figure 2-3) is **not confirmed
+for the ES3890**: the processor spec does not describe it. The simulator
+uses the manual's layout; code that reads or writes PSW bits (handlers,
+crt0's overflow mask, §13.3) must be checked on hardware before relying
+on it.
 
 ### 2.4 DWARF register numbers
 
@@ -521,14 +530,21 @@ violation it sees. None of them is checked by the assembler.
 |---|---|---|
 | P1 | The instruction right after a load must not read the load's destination register, in any operand: Src1, Src2, store data, branch comparison or `jspci` base | Manual §3.2, Table 3-2 (one slot for load–compute, –address, –data and –branch) |
 | P2 | A load must not use its destination register as its address register (`ld 0[r4],r4` is illegal) | Manual §3.3 |
-| P3 | Every branch and jump is followed by two delay-slot instructions. A delay slot must not hold a branch, jump, `trap`, `jpc`, `jpcrs` or `hsc` | Manual §3.4, §3.5; the manual allows branches in squashed slots, but we do not |
-| P4 | After `movtos rX,md`, the next instruction must not be `mstart`, `mstep`, `dstep` or `movfrs md`. Likewise the instruction after an `mstart`, `mstep` or `dstep` must not be `movfrs md` or `movtos rX,md` (conservative) | Manual §3.6.7 |
+| P3 | Every branch and jump is followed by two delay-slot instructions. A delay slot must not hold a branch, jump, `trap`, `jpc`, `jpcrs` or `hsc`. Exception: the slots of `jpc` and `jpcrs`, so that the exception-return sequence `jpcrs; jpc; jpc` is legal | Manual §3.4, §3.5, Appendix VI (Figure VI-2); the manual allows branches in squashed slots, but we do not |
+| P4 | After `movtos rX,md`, the next instruction must not be `mstart`, `mstep`, `dstep` or `movfrs md`. Likewise the instruction after an `mstart`, `mstep` or `dstep` must not be `movfrs md` or `movtos rX,md` (conservative) | Manual §3.6.7. The second sentence is stricter than the manual: its division routine (Appendix IV, Figure IV-2) reads `movfrs md` right after the last `dstep`. Routines adapted from the manual need a `nop` there |
 | P5 | Memory accesses are naturally aligned (§3) | Manual §2.1 |
 | P6 | A store followed by another memory instruction stalls. Performance only, not a correctness rule | Manual §3.3 |
 | P7 | Arithmetic must not trap: the start-up code runs with overflow traps masked (§13.3) | Manual §2.4.1 |
 
+What breaking P1 does on the original MIPS-X: the instruction in the
+load slot does not see the old register value either. Bypassing hands it
+the **address** the load is using instead (manual §3.2). So a P1
+violation gives a wrong value, not an old one, which is why the simulator
+stops on it rather than modelling it.
+
 If a later test on hardware shows the ES3890 interlocks on loads (plan
-L1), P1 can be dropped for that CPU.
+L1), P1 can be dropped for that CPU. Whether the ES3890 keeps the
+manual's bypass behaviour is likewise unconfirmed.
 
 ### 9.2 Hazards at control-flow boundaries
 
@@ -538,10 +554,10 @@ delay slot only if the second slot does not read its destination. Then
 no load is ever in flight at a branch target, a function entry or a
 return point, and the first instruction there can read any register.
 
-Also, a branch's squashed delay slots are not executed when the branch is
-not taken, so the fall-through path must satisfy P1 as if the slots were
-absent: the instruction before the branch and the first fall-through
-instruction must not form a load-use pair.
+A squashing branch that is not taken turns its slots into bubbles, but
+they still take a cycle each, so a load before the branch can never form
+a load-use pair with the first fall-through instruction. Squashing needs
+no extra rule.
 
 ## 10. Assembler syntax
 
@@ -826,6 +842,15 @@ it; this is the starting point:
 | 0xFFFF0008 | −65528 | Load word | Cycle counter, low word (latches the high word) |
 | 0xFFFF000C | −65524 | Load word | Cycle counter, high word, as latched |
 | 0xFFFF0010 | −65520 | Load word | Read a byte from stdin, or −1 at end of file |
+| 0xFFFF0014 | −65516 | Store (any width) | Write the low 8 bits to stderr (simulator extension) |
+| 0xFFFF0018 | −65512 | Load word | Instructions executed, low word (latches the high word; simulator extension) |
+| 0xFFFF001C | −65508 | Load word | Instructions executed, high word, as latched (simulator extension) |
+
+The exit status is the low 8 bits of the stored word, as for a host
+process. Any other access is a simulation error: a load narrower than a
+word, an exit store narrower than a word, a store to a load-only register
+or a load from a store-only one, and any other offset in the page.
+`sim/README.md` is the reference for the simulator's behaviour.
 
 ### 13.6 Atomics and synchronisation
 
