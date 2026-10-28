@@ -636,6 +636,7 @@ source. There is no `.set reorder` mode. The manual's `.noreorg` and
 | `li #v,rd` | 1, 2 or 3 instructions, chosen by §6.1. `v` must be an absolute expression known when assembling | No |
 | `la expr,rd` | Always the 3 instructions of §6.2 with `%hi`/`%lo` | No |
 | `b label`, `bra label` | `beq r0,r0,label` | `b` |
+| `bsq label` | `beqsq r0,r0,label`. Squashing never happens on an always-taken branch, so this is the same as `b`; it exists because disassemblers print the word | `bsq` |
 | `bgt a,b,L`, `ble`, `bhi`, `bls` (and `…sq`) | `blt b,a,L`, `bge b,a,L`, `blo b,a,L`, `bhs b,a,L` | No |
 | `call sym` | `jspci r0,#%call(sym),r31` | No |
 | `jmp sym` | `jspci r0,#%call(sym),r0` | No |
