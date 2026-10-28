@@ -22,7 +22,7 @@ Needs the sysroot (`make sysroot libc` at the top of the SDK) and the
 simulator.
 
 ```
-make MIPSX_LLVM_BIN=~/src/mipsx/llvm-project/build/bin             # -Os, with assertions
+make MIPSX_LLVM_BIN=~/src/openmipsx/llvm-project/build/bin             # -Os, with assertions
 make MIPSX_LLVM_BIN=... OPT=-O2 ASSERT=0                            # -O2, release
 make check MIPSX_LLVM_BIN=...                                       # self-tests
 make check-pk-kat MIPSX_LLVM_BIN=...                                # RSA/EC known answers, cycles (2 min)

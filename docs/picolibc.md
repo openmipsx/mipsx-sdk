@@ -8,7 +8,7 @@ to this SDK).
 ## Building
 
 ```
-make libc MIPSX_LLVM_BIN=~/src/mipsx/llvm-project/build/bin
+make libc MIPSX_LLVM_BIN=~/src/openmipsx/llvm-project/build/bin
 ```
 
 builds the sysroot (`make sysroot`), configures picolibc with Meson in
