@@ -1,6 +1,7 @@
 # MIPS-X ABI for the ES3890
 
-Status: version 1, 2026-10-28. Written in work package S1 of
+Status: version 1, 2026-10-28 (§8.6 and the DWARF rules of §2.4 and §4
+added in S17). Written in work package S1 of
 `linksys-spa3000/docs/plan/llvm-backend.md`. Clean-side document.
 
 This document is the contract between the LLVM backend (assembler,
@@ -125,9 +126,16 @@ on it.
 
 ### 2.4 DWARF register numbers
 
-r0–r31 are DWARF registers 0–31; `psw` is 32 and `md` is 33. The return
-address column is 31. Because r31 holds a word address, S17 must decide
-how unwind information expresses the byte return address (§14, D15).
+r0–r31 are DWARF registers 0–31; `psw` is 32 and `md` is 33. `pcm4` and
+`pcm1` have no DWARF number. The return address column of the call frame
+information is 31.
+
+r31 and its stack slot hold a word address, but every DWARF address is a
+byte address (§4), so the rule for column 31 always yields the byte
+return address: it is a `DW_CFA_val_expression` that multiplies by 4
+(§8.6, D15). An unwinder that follows the standard rules gets byte
+addresses with no MIPS-X knowledge; the recovered value of "r31" in a
+caller's frame is that byte address, not the word the hardware held.
 
 ## 3. Data types and layout
 
@@ -189,6 +197,17 @@ operators `%w()` and `%call()` do the conversion at link time (§12).
 
 `__builtin_return_address(0)` returns a byte address: the backend shifts
 r31 left by 2.
+
+Debug information uses byte addresses too: `DW_AT_low_pc`, `DW_AT_high_pc`
+(as a length in bytes), range and location lists, `.debug_addr`, the line
+table (`DW_LNE_set_address`, and address advances with
+`minimum_instruction_length` 4) and the initial locations of `.debug_frame`
+and `.eh_frame` FDEs (code alignment factor 4). They are ordinary
+R_MIPSX_32 relocations (R_MIPSX_32_PCREL in `.eh_frame`) against byte
+symbol values, so `llvm-dwarfdump`, `llvm-objdump --line-numbers` and
+`llvm-symbolizer` work with byte addresses, as on any other target. A
+debugger stub that receives a word PC from the hardware multiplies it by 4
+before looking anything up.
 
 ## 5. Calls, jumps and branches
 
@@ -505,7 +524,7 @@ stub walk the stack without unwind tables, if code is compiled with
 `-fno-omit-frame-pointer`.
 
 Without a frame pointer, where r31 and other registers are saved is the
-backend's choice, described by CFI (S17).
+backend's choice, described by CFI (§8.6).
 
 ### 8.3 Dynamic allocation
 
@@ -535,6 +554,38 @@ func:
     addi  sp,#16,sp        ; delay slot 1
     nop                    ; delay slot 2 (must not be a load, §9.2)
 ```
+
+### 8.6 Call frame information
+
+The compiler emits CFI when it emits debug information or unwind tables
+(`-g`, `-funwind-tables`); otherwise there is none (bare-metal default, no
+C++ exceptions). Without `-funwind-tables` it goes in `.debug_frame`.
+
+- **Initial state (CIE)**: CFA = r29 + 0; column 31 (return address) =
+  `DW_CFA_val_expression 31: DW_OP_drop; DW_OP_breg31 0; DW_OP_lit2;
+  DW_OP_shl`, that is r31 × 4. Every other register is unchanged.
+  Code alignment factor 4, data alignment factor −4.
+- **After the sp adjustment**: `DW_CFA_def_cfa_offset` *size*.
+- **After the callee-saved stores**: `DW_CFA_offset` for each saved
+  register except r31, and for r31 `DW_CFA_val_expression 31:
+  DW_OP_lit<n> (or DW_OP_constu n); DW_OP_minus; DW_OP_deref;
+  DW_OP_lit2; DW_OP_shl`, where the word is saved at CFA − n. (The CFA is
+  on the expression stack when it starts.)
+- **With a frame pointer**, once fp is set: `DW_CFA_def_cfa r30, 0`. This
+  also covers dynamic allocas and realigned frames, where sp moves.
+- Large frames (§8.4) need nothing extra: the rules follow the instruction
+  that finishes each step.
+- Epilogues have no CFI. The rules are exact at every call and at every
+  instruction of the body. They are not exact inside an epilogue, nor for
+  up to two instructions where the delay-slot filler moved a prologue
+  instruction (a store, or fp = sp + size) into the slots of a later
+  branch or call: its rule then starts at the branch. So an asynchronous
+  unwinder (a debugger stopping at an arbitrary instruction) may be wrong
+  there. CFI never changes the generated code: `-g` and `-g0` give the
+  same instructions.
+
+Unwinding one frame: CFA from the rule, then the caller's PC (bytes) from
+column 31, then the callee-saved registers from their offsets.
 
 ## 9. Pipeline rules for code generators
 
@@ -1043,8 +1094,14 @@ are for the operating system later).
 `__builtin_return_address` converts (§4).** `jspci` produces a word
 address, and converting at every call would cost an instruction. Code
 that looks at return addresses is rare. For DWARF unwinding (S17), the
-unwinder must multiply the r31 value by 4; S17 decides whether to do that
-with a `DW_CFA_val_expression` on a pseudo-register or in the consumer.
+rule for return address column 31 is a `DW_CFA_val_expression` that
+multiplies by 4 (§8.6), so the unwind tables are self-describing and a
+standard unwinder needs no MIPS-X knowledge. Rejected: leaving the ×4 to
+the consumer (every tool would need to know, and silently wrong
+otherwise); a separate pseudo-register column for the byte return address
+(an extra register number in every tool, for no gain: r31 is clobbered by
+the call, so its recovered value in the caller does not matter); word
+addresses in DWARF (would disagree with ELF symbols, §4).
 
 **D16. Jump-table entries are word addresses (§5.6).** Saves one
 instruction per switch dispatch. The tables are private to the compiler,
@@ -1091,4 +1148,4 @@ compilation units).
 | S10 | i64 order? | High word first (§7.1) |
 | S12 | Helper convention? | Standard (§7.4) |
 | S13 | Type sizes, `char` signedness, `va_list`, atomics? | §3, §7.2, §13.6 |
-| S17 | DWARF numbers, return address unit? | §2.4, D15 |
+| S17 | DWARF numbers, return address unit, DWARF addresses? | §2.4, §4, §8.6, D15 |
