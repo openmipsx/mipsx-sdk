@@ -361,11 +361,18 @@ of `_gp` can be reached in one instruction:
 ```
 
 The register is reserved and set up in version 1, so all objects are
-compatible, but the code generator does not have to use it: S9 starts
-with all globals through §6.2 (like `-G 0`). Placing small globals in
-`.sdata` and reaching them through gp is an optimisation for S16, which
-must keep the total of small data under 128 KB (the linker reports an
-overflow as an R_MIPSX_GPREL17 range error).
+compatible, but the code generator does not have to use it. Since S16
+it does, like GCC for MIPS with `-G 8`: variables of at most 8 bytes
+(`-mllvm -mipsx-ssection-threshold=N`, 0 to turn it off), small
+constants included, go in `.sdata`/`.sbss` (`.sdata.name`/`.sbss.name`
+with `-fdata-sections`), and are reached through gp when the address is
+inside the variable. External variables of a small type are assumed to
+be small data too (`-mllvm -mipsx-extern-sdata=false` to stop that);
+undefined weak, common and unsized ones are not, nor are variables with
+an explicit section other than `.sdata*`/`.sbss*`. All objects of a
+program should be built with the same threshold. A disagreement, or more
+than 128 KB of small data, cannot give a wrong address: the linker
+reports an R_MIPSX_GPREL17 range error.
 
 ## 7. Calling convention
 
