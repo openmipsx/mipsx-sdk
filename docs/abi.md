@@ -878,7 +878,9 @@ masking interrupts.
 
 ### 13.7 `setjmp` and `longjmp`
 
-`jmp_buf` holds r16–r22, r25–r27, r29, r30 and r31: 12 words (S15).
+`jmp_buf` holds r16–r22, r25–r27, r29, r30 and r31, in that order: 13
+words (S15; picolibc's `_JBLEN`). r23, r24 and r28 never change after
+start-up, so they are not saved.
 
 ## 14. Decisions and rationale
 
