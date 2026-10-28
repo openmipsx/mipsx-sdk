@@ -629,6 +629,13 @@ they still take a cycle each, so a load before the branch can never form
 a load-use pair with the first fall-through instruction. Squashing needs
 no extra rule.
 
+P4 has no such rule: a routine may put `mstep`s in its return's delay
+slots (`__mulsi3` does), so the first instruction at a return point
+must not be `movtos rX,md` or `movfrs md`. The compiler puts a nop
+there when its inline multiplication (a `movtos` to MD, then `mstep`s)
+follows a call, and never puts `mstart`, `mstep` or `dstep` in a delay
+slot itself.
+
 ## 10. Assembler syntax
 
 The syntax follows the manual (§4 and Appendix VII), with ES3890

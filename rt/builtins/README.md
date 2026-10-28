@@ -63,8 +63,8 @@ rows.
 
 | Routine | Cycles |
 |---|---|
-| `__mulsi3` | 14 (a fits in 8 bits, signed), 26 (a in 16 bits), 30 (b in 16 bits), 48 |
-| `__muldi3` | 62 (high words 0, bl < 2^16), 94 (high words 0), 80 (one high word −1), up to about 200 |
+| `__mulsi3` | 35, whatever the operands (constant-time) |
+| `__muldi3` | 62 (high words 0, bl < 2^16), 94 (high words 0), about 100 (one high word −1), up to 172 |
 | `__udivsi3` | 25 (n < 2^8), 33 (n < 2^16), 43, 10 (d = 0), 13–15 (d > 2^31) |
 | `__umodsi3` | `__udivsi3` + 7 |
 | `__divsi3`, `__modsi3` | `__udivsi3` + 13 |
@@ -74,14 +74,21 @@ rows.
 | 32-bit shifts | 10 |
 | 64-bit shifts | 14 |
 
-Means over the test rows (biased towards edge cases): `__mulsi3` 28,
-`__udivsi3` 27, `__divsi3` 47, `__muldi3` 112, `__udivdi3` 74.
+Means over the test rows (biased towards edge cases): `__mulsi3` 35,
+`__udivsi3` 27, `__divsi3` 47, `__muldi3` 127, `__udivdi3` 74.
 
 ## How they work
 
 - **Multiply**: MD holds the multiplier, consumed from its top bit; a
   multiplier that fits in k bits is put at the top of MD and needs only
-  k steps. `__muldi3` builds the 64-bit product of the low words from
+  k steps. `__mulsi3` always takes all 32, so that its time does not
+  depend on the operands (BearSSL's EC and GHASH code multiply secrets);
+  the compiler does the narrow cases inline when known bits show an
+  operand fits in 17 bits or fewer. It used to choose 8 or 16 steps
+  at run time (14 to 48 cycles); over BearSSL's `m15` EC code the
+  constant-time version costs 23–27%. `__muldi3` is not constant-time:
+  it skips terms when a high word or the top half of bl is 0. `__muldi3`
+  builds the 64-bit product of the low words from
   four 16 × 16 products (two `movtos` of the same word: after 16 steps MD
   holds the low half at the top) and adds the cross terms from
   `__mulsi3`.
@@ -130,6 +137,9 @@ routine, the arguments, the expected and actual values.
   caller-saved anyway.
 - Multiplication by a constant should be expanded inline (shifts and
   adds) rather than calling `__mulsi3`; division by a constant should
-  stay a call (there is no cheap high multiply).
+  stay a call (there is no cheap high multiply). The backend also
+  multiplies inline with `mstep` when an operand is known to be narrow
+  (`MULSTEPS`), and pads a nop between a call's return and a `movtos md`,
+  since `__mulsi3` ends with two `mstep`s in its return delay slots.
 - Linking: until there is an archive, link the `.S` files needed. Each
   file is one object; `muldi3.S` needs `mulsi3.S`.
