@@ -40,6 +40,36 @@ The summary line per level gives the pass rate over the tests that ran:
 torture -O2: 1514 tests, 100 unsupported, 1414 run: 1414 pass (100.0%)
 ```
 
+`--work DIR` builds the executables in `DIR` and keeps them, for the
+variant sweep below.
+
+## Variant sweep
+
+`variant_sweep.py` shows which unconfirmed facts about the processor
+compiled code depends on. It runs every `*.elf` in the given
+directories on the simulator, once as is and once per variant
+(`../sim/README.md`, "Variants"). Programs that pass as is take part;
+one that then fails under a variant depends on the fact the variant
+contradicts. A variant that affects nothing means that fact is not
+depended on, or not exercised by these programs.
+
+```
+python3 tests/run_tests.py torture --llvm-bin ... --work build/sweep/torture
+python3 tests/run_tests.py builtins --llvm-bin ... --work build/sweep/builtins
+python3 tests/variant_sweep.py build/sweep/torture build/sweep/builtins --report build/sweep/report.md
+```
+
+| Option | Meaning |
+|---|---|
+| `--variant NAME` | Only this variant, repeatable (default: all) |
+| `--results FILE` | One tab-separated line per program and variant (`-` is the plain run) |
+| `--report FILE` | Write the summary table and examples as Markdown |
+| `--examples N` | Programs listed per variant (default 5) |
+| `-j N`, `--max-cycles`, `--run-timeout` | As for `run_tests.py` |
+
+For other programs, set `$MIPSX_SIM` to a script that runs
+`mipsx-sim --variant=NAME "$@"`; the `rt/` and `tools/` tests honour it.
+
 ## Statuses
 
 | Status | Meaning |

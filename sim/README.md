@@ -30,6 +30,7 @@ mipsx-sim [options] program.elf
 | `-m N`, `--mem-size=N` | Size of RAM at address 0 (default 0x200000, the device's 2 MB) |
 | `-s`, `--stats` | At exit, print cycles, instructions, squashed slots, store stalls and delay-slot use (how many slots hold `nop`; for S11) |
 | `-d`, `--disassemble` | Print the disassembly of the executable segments and exit |
+| `--variant=NAME,...` | Simulate an alternative reading of the spec (see "Variants"); repeatable. `--variant=list` lists them |
 
 Exit status: the program's exit status (the low 8 bits of the word
 stored to the exit register), or
@@ -161,6 +162,40 @@ address bits as the hardware does; `off` checks nothing.
 | P4 | `mstart`, `mstep`, `dstep` or `movfrs md` right after `movtos md`; `movfrs md` or `movtos md` right after a step |
 | P5 | Misaligned word or halfword access |
 | P6 | Not a hazard: counted as a stall cycle |
+
+## Variants
+
+The simulator follows the spec, and the compiler was tested against the
+simulator, so a wrong fact in the spec would leave every test passing.
+A variant replaces one fact that rests on a Hypothesis, or on the manual
+alone, with a plausible alternative. If a program that passes normally
+fails under a variant, the program depends on that fact, and the fact
+needs checking on hardware. `tests/variant_sweep.py` runs whole suites
+this way (`../tests/README.md`).
+
+Semantic variants change what an instruction does:
+
+| Variant | Instead of the spec |
+|---|---|
+| `ldb-swap` | Opcode 100 (`ldbu`) sign-extends and 101 (`ldb`) zero-extends. Spec §3 marks signedness as a Hypothesis |
+| `ldh-swap` | The same for halfwords: 001 (`ldhu`) sign-extends, 111 (`ldh`) zero-extends |
+| `bic-swap` | `bic` is Src1 & ~Src2, as the manual's comment column says, not Src2 & ~Src1 |
+| `shift32-zero` | `sh` and `asr` with n = 32 (shift field e = 0) shift by 0, as a 5-bit shifter would |
+| `squash-taken` | SQ = 1 squashes the delay slots when the branch is taken rather than when it is not |
+| `dstep-borrow` | `dstep` subtracts when the 33-bit value (Src1 << 1 \| MSB(MD)) is at least Src2, rather than when the 32-bit difference has its MSB clear. The two agree whenever Src2 ≤ 2³¹ and the partial remainder is below Src2 |
+
+Rule variants add a pipeline rule, reported as a hazard like those
+above (`--hazards` applies):
+
+| Variant | Extra rule |
+|---|---|
+| `load-delay-2` | Loads have two delay slots: P1 also applies to the second instruction after a load (a squashed slot counts as one) |
+| `store-mem` | A memory instruction right after a store is a hazard rather than a stall (P6) |
+| `md-delay-2` | P4 also applies with one instruction in between |
+| `icache` | Fetching a word that was stored to since the program was loaded is a hazard: an instruction cache that stores do not update |
+
+There is no PSW variant: nothing in the simulator raises an interrupt,
+so a wrong PSW layout cannot change what a program computes here.
 
 ## I/O page
 

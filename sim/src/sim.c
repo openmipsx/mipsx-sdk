@@ -28,6 +28,54 @@
 
 enum hazmode { HAZ_ERROR, HAZ_WARN, HAZ_OFF };
 
+/* Variants (--variant): alternative readings of the processor spec where
+ * it rests on a Hypothesis or on the manual alone.  Semantic variants
+ * change what an instruction does; rule variants add pipeline rules,
+ * reported as hazards.  Running a test suite under each one shows which
+ * unconfirmed facts compiled code depends on (sim/README.md). */
+enum {
+  V_LDB_SWAP = 1u << 0,
+  V_LDH_SWAP = 1u << 1,
+  V_BIC_SWAP = 1u << 2,
+  V_SHIFT32_ZERO = 1u << 3,
+  V_SQUASH_TAKEN = 1u << 4,
+  V_DSTEP_BORROW = 1u << 5,
+  V_LOAD_DELAY_2 = 1u << 6,
+  V_STORE_MEM = 1u << 7,
+  V_MD_DELAY_2 = 1u << 8,
+  V_ICACHE = 1u << 9,
+};
+
+static const struct variant {
+  const char *name;
+  unsigned flag;
+  const char *what;
+} variants[] = {
+  {"ldb-swap", V_LDB_SWAP,
+   "opcode 100 loads a signed byte and 101 an unsigned one (spec §3)"},
+  {"ldh-swap", V_LDH_SWAP,
+   "opcode 001 loads a signed halfword and 111 an unsigned one (spec §3)"},
+  {"bic-swap", V_BIC_SWAP, "bic is Src1 & ~Src2 (spec §5)"},
+  {"shift32-zero", V_SHIFT32_ZERO,
+   "sh and asr with n = 32 shift by 0 (a 5-bit shifter; spec §5)"},
+  {"squash-taken", V_SQUASH_TAKEN,
+   "SQ = 1 squashes the delay slots when the branch is taken (spec §4)"},
+  {"dstep-borrow", V_DSTEP_BORROW,
+   "dstep subtracts when the 33-bit shifted value is >= Src2, not when "
+   "the 32-bit difference is non-negative (spec §5)"},
+  {"load-delay-2", V_LOAD_DELAY_2,
+   "rule: loads have two delay slots (P1 at distance 2)"},
+  {"store-mem", V_STORE_MEM,
+   "rule: no memory instruction right after a store (P6 as a hazard)"},
+  {"md-delay-2", V_MD_DELAY_2,
+   "rule: P4 also applies two instructions apart"},
+  {"icache", V_ICACHE,
+   "rule: no fetch of a word stored to since load (an instruction cache "
+   "that stores do not update)"},
+};
+
+#define NVARIANTS (sizeof variants / sizeof variants[0])
+
 #define DCACHE_SIZE 16384
 
 struct dcache {
@@ -61,12 +109,17 @@ struct cpu {
   /* Hazard tracking: state left by the previous pipeline slot. */
   int load_reg;      /* destination of a load in the previous slot, or 0 */
   uint32_t load_pc;
+  int load_reg2;     /* the same, two slots back (--variant=load-delay-2) */
+  uint32_t load_pc2;
   int md_prev;       /* 1 = movtos md, 2 = mstart/mstep/dstep */
   uint32_t md_prev_pc;
+  int md_prev2;      /* the same, two slots back (--variant=md-delay-2) */
   int prev_store;
   uint32_t prev_pc;
 
   enum hazmode hz;
+  unsigned variant;  /* V_* */
+  uint32_t *stored;  /* one bit per RAM word stored to (V_ICACHE) */
   struct dcache dc[DCACHE_SIZE];
   FILE *trace;
   struct program prog;
@@ -213,7 +266,12 @@ static uint32_t mem_load(struct cpu *c, uint32_t addr, const struct insn *in,
     sim_error(c, pcw, "load from unmapped address 0x%08x", addr);
   const uint8_t *p = c->mem + addr;
   uint32_t v;
-  switch (in->op) {
+  enum op op = in->op;
+  if (c->variant & V_LDB_SWAP)
+    op = op == OP_LDB ? OP_LDBU : op == OP_LDBU ? OP_LDB : op;
+  if (c->variant & V_LDH_SWAP)
+    op = op == OP_LDH ? OP_LDHU : op == OP_LDHU ? OP_LDH : op;
+  switch (op) {
   case OP_LD:
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 |
            p[3];
@@ -238,6 +296,8 @@ static void mem_store(struct cpu *c, uint32_t addr, uint32_t v,
   if (addr >= c->memsize || c->memsize - addr < size)
     sim_error(c, pcw, "store to unmapped address 0x%08x", addr);
   uint8_t *p = c->mem + addr;
+  if (c->stored)
+    c->stored[addr / 128] |= 1u << (addr / 4 % 32);
   switch (size) {
   case 4:
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
@@ -322,6 +382,10 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   }
   if (!have)
     word = 0x60000019u;
+  if (c->stored && have && !squashed &&
+      (c->stored[pcw / 32] >> (pcw % 32) & 1))
+    hazard(c, pcw, "fetch of a word stored to since the program was loaded "
+           "(variant icache)");
   {
     /* Direct-mapped decode cache, keyed by the instruction word so that
      * stores into code are seen. */
@@ -366,7 +430,10 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   c->cycles++;
   if (squashed) {
     c->squashed++;
+    c->load_reg2 = c->load_reg;
+    c->load_pc2 = c->load_pc;
     c->load_reg = 0;
+    c->md_prev2 = c->md_prev;
     c->md_prev = 0;
     c->prev_store = 0;
     c->prev_pc = pcw;
@@ -403,7 +470,25 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   if ((in->flags & F_LOAD) && in->dest && in->dest == in->src1)
     hazard(c, pcw, "load overwrites its own address register r%u (P2): %s",
            in->dest, disas(pcw, in, d, sizeof d));
+  if ((c->variant & V_LOAD_DELAY_2) && c->load_reg2 &&
+      (in->reads & bitr((unsigned)c->load_reg2))) {
+    char lp[160];
+    where(c, c->load_pc2, lp, sizeof lp);
+    hazard(c, pcw, "load-use hazard at distance 2 (variant load-delay-2): "
+           "%s reads r%d, loaded at %s", disas(pcw, in, d, sizeof d),
+           c->load_reg2, lp + 3);
+  }
+  if ((c->variant & V_MD_DELAY_2) &&
+      ((c->md_prev2 == 1 && ((in->flags & F_MD) ||
+                             (in->op == OP_MOVFRS && in->spec == SPEC_MD))) ||
+       (c->md_prev2 == 2 && (in->op == OP_MOVFRS || in->op == OP_MOVTOS) &&
+        in->spec == SPEC_MD)))
+    hazard(c, pcw, "MD hazard at distance 2 (variant md-delay-2): %s",
+           disas(pcw, in, d, sizeof d));
   if (c->prev_store && (in->flags & F_MEM)) {
+    if (c->variant & V_STORE_MEM)
+      hazard(c, pcw, "memory instruction right after a store (variant "
+             "store-mem): %s", disas(pcw, in, d, sizeof d));
     c->stalls++; /* P6: performance only */
     c->cycles++;
   }
@@ -448,22 +533,23 @@ __attribute__((noinline)) static void step(struct cpu *c) {
     default: taken = (int32_t)a >= (int32_t)b; break;
     }
     ctl = 1;
+    int squash = in->sq && (c->variant & V_SQUASH_TAKEN ? taken : !taken);
     if (taken) {
       redirect = 1;
       target = pcw + 2 + (uint32_t)in->imm;
-    } else if (in->sq) {
-      c->sqd[0] = c->sqd[1] = 1;
     }
+    if (squash)
+      c->sqd[0] = c->sqd[1] = 1;
     if (c->trace)
-      snprintf(eff, sizeof eff, taken ? "taken" :
-               in->sq ? "not taken, slots squashed" : "not taken");
+      snprintf(eff, sizeof eff, "%s%s", taken ? "taken" : "not taken",
+               squash ? ", slots squashed" : "");
     break;
   }
   case OP_ADD: res = a + b; break;
   case OP_SUB: res = a - b; break;
   case OP_SUBNC: res = a + ~b; break;
   case OP_AND: res = a & b; break;
-  case OP_BIC: res = b & ~a; break;
+  case OP_BIC: res = c->variant & V_BIC_SWAP ? a & ~b : b & ~a; break;
   case OP_NOT: res = ~a; break;
   case OP_OR: res = a | b; break;
   case OP_XOR: res = a ^ b; break;
@@ -480,7 +566,10 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   case OP_DSTEP: {
     uint32_t x = (a << 1) | (c->md >> 31);
     uint32_t o = x - b;
-    if (o & 0x80000000u) {
+    int keep = (o & 0x80000000u) != 0;
+    if (c->variant & V_DSTEP_BORROW)
+      keep = ((uint64_t)a << 1 | c->md >> 31) < b;
+    if (keep) {
       res = x;
       c->md <<= 1;
     } else {
@@ -498,12 +587,16 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   }
   case OP_SH: {
     uint64_t pair = (uint64_t)b << 32 | a;
-    res = (uint32_t)(pair >> in->imm);
+    int n = in->imm == 32 && (c->variant & V_SHIFT32_ZERO) ? 0 : in->imm;
+    res = (uint32_t)(pair >> n);
     break;
   }
   case OP_ASR:
-    res = in->imm >= 32 ? (uint32_t)((int32_t)a >> 31)
-                       : (uint32_t)((int32_t)a >> in->imm);
+    if (in->imm == 32 && (c->variant & V_SHIFT32_ZERO))
+      res = a;
+    else
+      res = in->imm >= 32 ? (uint32_t)((int32_t)a >> 31)
+                         : (uint32_t)((int32_t)a >> in->imm);
     break;
   case OP_ADDI: res = a + (uint32_t)in->imm; break;
   case OP_JSPCI:
@@ -602,8 +695,11 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   c->q[2] = redirect ? target : next;
 
   c->instret++;
+  c->load_reg2 = c->load_reg;
+  c->load_pc2 = c->load_pc;
   c->load_reg = new_load_reg;
   c->load_pc = pcw;
+  c->md_prev2 = c->md_prev;
   c->md_prev = new_md_prev;
   c->md_prev_pc = pcw;
   c->prev_store = (in->flags & F_STORE) != 0;
@@ -667,8 +763,37 @@ static void usage(FILE *f) {
     "  -m, --mem-size=BYTES    size of RAM at address 0 (default 0x200000)\n"
     "  -s, --stats             print cycle and instruction counts at exit\n"
     "  -d, --disassemble       print the program's code and exit\n"
+    "      --variant=NAME,...  simulate an alternative reading of the spec;\n"
+    "                          --variant=list lists them\n"
     "  -h, --help              show this help\n"
     "  -V, --version           show the version\n");
+}
+
+/* Adds the comma-separated variant names in s to *out.  Returns 0, 1 if
+ * the list was printed, or -1 on an unknown name. */
+static int parse_variants(const char *s, unsigned *out) {
+  if (!strcmp(s, "list")) {
+    for (unsigned i = 0; i < NVARIANTS; i++)
+      printf("%-14s %s\n", variants[i].name, variants[i].what);
+    return 1;
+  }
+  while (*s) {
+    size_t n = strcspn(s, ",");
+    unsigned i;
+    for (i = 0; i < NVARIANTS; i++)
+      if (strlen(variants[i].name) == n && !strncmp(s, variants[i].name, n))
+        break;
+    if (i == NVARIANTS) {
+      fprintf(stderr, "mipsx-sim: error: unknown variant '%.*s' "
+                      "(--variant=list lists them)\n", (int)n, s);
+      return -1;
+    }
+    *out |= variants[i].flag;
+    s += n;
+    if (*s)
+      s++;
+  }
+  return 0;
 }
 
 static int parse_u64(const char *s, uint64_t *out) {
@@ -697,6 +822,7 @@ int main(int argc, char **argv) {
     {"mem-size", required_argument, 0, 'm'},
     {"stats", no_argument, 0, 's'},
     {"disassemble", no_argument, 0, 'd'},
+    {"variant", required_argument, 0, 'X'},
     {"help", no_argument, 0, 'h'},
     {"version", no_argument, 0, 'V'},
     {0, 0, 0, 0},
@@ -733,6 +859,12 @@ int main(int argc, char **argv) {
       break;
     case 's': stats = 1; break;
     case 'd': dis = 1; break;
+    case 'X':
+      switch (parse_variants(optarg, &c->variant)) {
+      case 1: return 0;
+      case -1: return EXIT_LOAD_ERROR;
+      }
+      break;
     case 'h': usage(stdout); return 0;
     case 'V': printf("mipsx-sim %s\n", SIM_VERSION); return 0;
     default: usage(stderr); return EXIT_LOAD_ERROR;
@@ -745,7 +877,9 @@ int main(int argc, char **argv) {
 
   c->memsize = (uint32_t)memsize;
   c->mem = calloc(1, c->memsize);
-  if (!c->mem) {
+  if (c->variant & V_ICACHE)
+    c->stored = calloc(c->memsize / 128 + 1, sizeof *c->stored);
+  if (!c->mem || ((c->variant & V_ICACHE) && !c->stored)) {
     fprintf(stderr, "mipsx-sim: error: out of memory\n");
     return EXIT_LOAD_ERROR;
   }

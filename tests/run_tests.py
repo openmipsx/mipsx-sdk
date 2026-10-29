@@ -63,7 +63,11 @@ class Runner:
             if args.libc == "sysroot" and not self.has_libc:
                 sys.exit("run_tests.py: no lib/libc.a in " + self.sysroot)
             self.has_libc = args.libc == "sysroot"
-        self.tmp = tempfile.mkdtemp(prefix="mipsx-tests-")
+        if args.work:
+            os.makedirs(args.work, exist_ok=True)
+            self.tmp = args.work
+        else:
+            self.tmp = tempfile.mkdtemp(prefix="mipsx-tests-")
         self.support_obj = None
         if not self.has_libc:
             self.support_obj = os.path.join(self.tmp, "minilibc.o")
@@ -269,6 +273,8 @@ def main():
                     help="extra compiler flags for the tests (one string)")
     ap.add_argument("--results", help="write one line per test here")
     ap.add_argument("--keep", action="store_true", help="keep the executables")
+    ap.add_argument("--work", help="build the executables in this directory "
+                    "and keep them (for tests/variant_sweep.py)")
     ap.add_argument("--all", action="store_true",
                     help="builtins: also run tests of functions not built")
     ap.add_argument("-v", action="store_true", help="print every non-PASS")
@@ -304,7 +310,7 @@ def main():
             status, detail = fut.result()
             results.append((os.path.basename(src), opt, status, detail))
     results.sort()
-    if not args.keep:
+    if not args.keep and not args.work:
         shutil.rmtree(runner.tmp, ignore_errors=True)
 
     if args.results:
