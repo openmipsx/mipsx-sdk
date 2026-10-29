@@ -594,16 +594,24 @@ taken branches, calls and returns. The compiler (S8, S11) must follow
 them, hand-written assembly should, and the simulator (S6) reports every
 violation it sees. None of them is checked by the assembler.
 
+Some rules are hardware rules and some are ABI conventions. Spec §9
+looks at what the vendor's compiler does in code that runs on the
+device: where that code breaks a rule and still gives correct results,
+the rule is not needed by the hardware. We keep such rules as
+conventions, since they make code easier to check (D17), and the
+simulator tags each report with its class (`--hazard-rules=hardware`
+leaves the conventions out, for code from other tools).
+
 ### 9.1 Rules
 
 | # | Rule | Source |
 |---|---|---|
-| P1 | The instruction right after a load must not read the load's destination register, in any operand: Src1, Src2, store data, branch comparison or `jspci` base | Manual §3.2, Table 3-2 (one slot for load–compute, –address, –data and –branch) |
-| P2 | A load must not use its destination register as its address register (`ld 0[r4],r4` is illegal) | Manual §3.3 |
-| P3 | Every branch and jump is followed by two delay-slot instructions. A delay slot must not hold a branch, jump, `trap`, `jpc`, `jpcrs` or `hsc`. Exception: the slots of `jpc` and `jpcrs`, so that the exception-return sequence `jpcrs; jpc; jpc` is legal | Manual §3.4, §3.5, Appendix VI (Figure VI-2); the manual allows branches in squashed slots, but we do not |
-| P4 | After `movtos rX,md`, the next instruction must not be `mstart`, `mstep`, `dstep` or `movfrs md`. Likewise the instruction after an `mstart`, `mstep` or `dstep` must not be `movfrs md` or `movtos rX,md` (conservative) | Manual §3.6.7. The second sentence is stricter than the manual: its division routine (Appendix IV, Figure IV-2) reads `movfrs md` right after the last `dstep`. Routines adapted from the manual need a `nop` there |
-| P5 | Memory accesses are naturally aligned (§3) | Manual §2.1 |
-| P6 | A store followed by another memory instruction stalls. Performance only, not a correctness rule | Manual §3.3 |
+| P1 | The instruction right after a load must not read the load's destination register, in any operand: Src1, Src2, store data, branch comparison or `jspci` base | Hardware. Manual §3.2, Table 3-2 (one slot for load–compute, –address, –data and –branch). Spec §9 (Simulated): vendor code never reads a loaded register in the next instruction, and reads it in the one after millions of times, so a load has one delay slot. Whether the hardware interlocks is not known |
+| P2 | A load must not use its destination register as its address register (`ld 0[r4],r4`) | Convention, not a hardware hazard. Manual §3.3 forbids it, but spec §9 (Simulated) finds vendor code doing it about 1.5 million times with correct results: the register gets the loaded value, at least outside exceptions. We keep the rule so that a faulted load could be restarted, which the manual's rule is presumably about |
+| P3 | Every branch and jump is followed by two delay-slot instructions. A delay slot must not hold a branch, jump, `trap`, `jpc`, `jpcrs` or `hsc`. Exception: the slots of `jpc` and `jpcrs`, so that the exception-return sequence `jpcrs; jpc; jpc` is legal | Hardware. Manual §3.4, §3.5, Appendix VI (Figure VI-2). Spec §9 does not cover it. The manual allows branches in squashed slots; that we do not is a convention |
+| P4 | After `movtos rX,md`, the next instruction must not be `mstart`, `mstep`, `dstep` or `movfrs md`. Likewise the instruction after an `mstart`, `mstep` or `dstep` must not be `movfrs md` or `movtos rX,md` (conservative) | Hardware for the first sentence: manual §3.6.7. The second sentence is a convention, stricter than the manual: its division routine (Appendix IV, Figure IV-2) reads `movfrs md` right after the last `dstep`. Routines adapted from the manual need a `nop` there. Spec §9: no vendor path that could be run uses MD, so this rests on the manual alone |
+| P5 | Memory accesses are naturally aligned (§3) | Hardware. Manual §2.1 |
+| P6 | A store followed by another memory instruction may stall. Performance only, not a correctness rule | Manual §3.3. Spec §9 (Simulated): vendor code does this about 2 million times, so it is legal; whether it stalls is not known |
 | P7 | Arithmetic must not trap: the start-up code runs with overflow traps masked (§13.3) | Manual §2.4.1 |
 
 What breaking P1 does on the original MIPS-X: the instruction in the
@@ -619,7 +627,10 @@ manual's bypass behaviour is likewise unconfirmed.
 ### 9.2 Hazards at control-flow boundaries
 
 To make P1 checkable within one basic block: **the second delay slot of
-any branch or jump must not be a load.** A load may go in the first
+any branch or jump must not be a load.** This is a convention, not a
+hardware hazard: spec §9 (Simulated) finds vendor code with loads in the
+second delay slot about 70,000 times, at dozens of places, so the
+hardware allows it. The compiler keeps the rule for the reason in D17. A load may go in the first
 delay slot only if the second slot does not read its destination. Then
 no load is ever in flight at a branch target, a function entry or a
 return point, and the first instruction there can read any register.
@@ -1068,9 +1079,10 @@ padding but differs from every common 32-bit ABI).
 
 **D11. `char` is signed (§3).** As on MIPS, where MIPS-X comes from, and
 as in GCC's default for most embedded C. The ES3890 has both loads
-(spec §3), so neither choice costs instructions. (The signedness of the
-two byte loads is still a Hypothesis in the spec; whichever turns out to
-be which, the compiler uses the right one.) Rejected: unsigned `char` (as
+(spec §3), so neither choice costs instructions. (Spec §3 now settles
+opcode 100 as the zero-extending byte load; 101's signedness is still a
+Hypothesis. Whichever turns out to be which, the compiler uses the right
+one.) Rejected: unsigned `char` (as
 on ARM; no advantage here).
 
 **D12. Assembler syntax as in the manual, with no delay-slot filling
@@ -1138,7 +1150,7 @@ compilation units).
 | S4 | `e_flags`? | §11.2 |
 | S4 | REL or RELA? | RELA |
 | S5 | Range checks, code base symbols, `_gp`? | §12, §13.1 |
-| S6 | Hazards to report? | P1–P5 and §9.2 (§9) |
+| S6 | Hazards to report? | P1–P5 and §9.2, each tagged hardware rule or convention (§9) |
 | S6 | Return address value of `jspci`? | Its word address + 3 (§5.1) |
 | S6 | I/O page? | §13.5 |
 | S7 | crt0 duties, linker symbols, memory map? | §13 |

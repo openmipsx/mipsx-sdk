@@ -29,6 +29,10 @@
 #define IO_INSTRET_LO 0x18u /* load word: instructions retired low (latches high) */
 #define IO_INSTRET_HI 0x1Cu /* load word: latched instructions retired high */
 
+/* Code addresses are 30-bit word addresses; jump and branch targets wrap
+ * modulo 2^30 words (spec §1, §6). */
+#define CODE_MASK 0x3FFFFFFFu
+
 /* Special register numbers (spec §6). */
 #define SPEC_PSW 1
 #define SPEC_MD  2
@@ -92,6 +96,7 @@ struct insn {
   int wreg;                  /* general register written, or -1 */
   unsigned size;             /* memory access size in bytes */
   const char *why;           /* reason when op == OP_INVALID */
+  int unknown;               /* OP_INVALID, but defined on the hardware */
 };
 
 void mx_decode(uint32_t word, struct insn *in);

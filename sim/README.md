@@ -27,6 +27,7 @@ mipsx-sim [options] program.elf
 | `-c N`, `--max-cycles=N` | Stop after N cycles with status 124 (default 10⁹; 0 = no limit) |
 | `--hazards=error\|warn\|off` | What a pipeline rule violation does (default `error`) |
 | `-w`, `--warn-hazards` | Same as `--hazards=warn` |
+| `--hazard-rules=all\|hardware` | Which rules to check (default `all`). `hardware` leaves out the ABI conventions (see "Hazards reported"), for code the vendor's compiler or other tools wrote |
 | `-m N`, `--mem-size=N` | Size of RAM at address 0 (default 0x200000, the device's 2 MB) |
 | `-s`, `--stats` | At exit, print cycles, instructions, squashed slots, store stalls and delay-slot use (how many slots hold `nop`; for S11) |
 | `-d`, `--disassemble` | Print the disassembly of the executable segments and exit |
@@ -38,14 +39,15 @@ stored to the exit register), or
 | Status | Meaning |
 |---|---|
 | 124 | Cycle limit reached |
-| 125 | Simulation error: pipeline hazard (in `error` mode), undefined instruction, access to unmapped memory, fetch outside RAM, `hsc` |
+| 125 | Simulation error: pipeline hazard (in `error` mode), undefined or unknown instruction, access to unmapped memory, fetch outside RAM, `hsc` |
 | 126 | The program could not be loaded, or bad options |
 
 Diagnostics go to stderr, prefixed `mipsx-sim: error:` or `warning:`,
-with the PC as a byte address and the nearest symbol, for example:
+with the PC as a byte address and the nearest symbol. Hazard reports end
+with the class of the rule broken, for example:
 
 ```
-mipsx-sim: error: pc 0x00002008 <_start+0x8>: load-use hazard (P1): mov r4,r5 reads r4, loaded by the previous instruction at 0x00002004 <_start+0x4> (cycle 3)
+mipsx-sim: error: pc 0x00002008 <_start+0x8>: load-use hazard (P1): mov r4,r5 reads r4, loaded by the previous instruction at 0x00002004 <_start+0x4> [hardware rule] (cycle 3)
 ```
 
 ## The runner, `mipsx-run`
@@ -108,9 +110,23 @@ address split of manual §2.5.
 
 **Instructions.** All of spec §3 to §6, decoded strictly: undefined
 encodings (branch conditions 000 and 100, unknown function codes, a
-shift field whose low four bits are not one-hot, compute-immediate OP
-001 other than `hsc`, bad special register numbers) stop the simulation.
-Arithmetic never traps on overflow (abi §13.3).
+shift field whose low four bits are not one-hot, bad special register
+numbers) stop the simulation. So do compute-immediate OP 001 encodings
+other than `hsc`, reported as an "unknown instruction": spec §6 says
+later firmware executes them, but not what they do. Arithmetic never
+traps on overflow (abi §13.3).
+
+Where the spec marks a fact **Simulated** (vendor code run on this
+simulator, checked against an independent oracle), the simulator
+follows it: opcode 100 (`ldbu`) zero-extends, `bic` is ~Src1 & Src2,
+and SQ = 1 squashes the slots of a branch that is not taken. The
+signedness of opcodes 101, 001 and 111 is still a Hypothesis (spec §3).
+
+**Code addresses.** Word addresses are 30 bits wide (spec §1): branch,
+`jspci`, `jpc` and `jpcrs` targets and the sequential PC are taken modulo
+2³⁰ words, so a `jspci` whose Src1 + offset has bit 30 or 31 set lands
+on bits 29–0 (spec §6, "Target wrap"). A wrapped target outside RAM is
+still a fetch error.
 
 **Pipeline.** A three-entry fetch queue gives the two delay slots of
 every branch and jump: a jump target takes effect three fetches later,
@@ -120,7 +136,8 @@ its two slots into bubbles: they take a cycle each but have no effect,
 and they do not count as uses of a loaded register.
 
 **Cycles.** One cycle per instruction or squashed slot, one extra when a
-memory instruction follows a store (manual §3.3, P6), two bubbles after
+memory instruction follows a store (manual §3.3, P6; spec §9 confirms
+the pair is legal but not whether it stalls), two bubbles after
 `trap`. Cache misses are not modelled.
 
 **MD and steps.** `mstart`, `mstep` and `dstep` as in spec §5.
@@ -151,17 +168,30 @@ Each check reports the PC and both instructions involved. In `error`
 mode (the default) the first one stops the run with status 125; in
 `warn` mode it is printed (up to 100) and execution continues with
 sequential semantics, except that a misaligned access drops the low
-address bits as the hardware does; `off` checks nothing.
+address bits as the hardware does; `off` checks nothing. At exit, `warn`
+mode prints the number of reports for each rule, including those past
+the first 100.
 
-| Rule (abi §9) | Check |
-|---|---|
-| P1 | The instruction after a load (in execution order, across taken branches and jumps) reads the load's destination as Src1, Src2, store data, branch operand or `jspci` base |
-| P2 | A load whose destination is its address register |
-| P3 | A branch, jump, `trap` or `hsc` in a delay slot, even a squashed one. Exception: the slots of `jpc` and `jpcrs`, which hold the restarted instructions of an exception return |
-| §9.2 | A load in the second delay slot of a branch or jump, even a squashed one (same exception) |
-| P4 | `mstart`, `mstep`, `dstep` or `movfrs md` right after `movtos md`; `movfrs md` or `movtos md` right after a step |
-| P5 | Misaligned word or halfword access |
-| P6 | Not a hazard: counted as a stall cycle |
+Each report is tagged with the class of its rule. A **hardware rule**
+comes from the manual and nothing in the spec contradicts it. An **ABI
+convention** is a rule of abi §9 that the hardware does not need: spec
+§9 found the vendor's code breaking it on the device, or the manual
+allows what the ABI forbids. Our compiler still follows the conventions,
+so the default (`--hazard-rules=all`) checks them;
+`--hazard-rules=hardware` leaves them out. A **variant rule** comes from
+`--variant` and is checked whenever its variant is on.
+
+| Rule (abi §9) | Class | Check |
+|---|---|---|
+| P1 | Hardware | The instruction after a load (in execution order, across taken branches and jumps) reads the load's destination as Src1, Src2, store data, branch operand or `jspci` base. Spec §9: one load delay slot |
+| P2 | Convention | A load whose destination is its address register. Spec §9: works on the hardware and gives the loaded value |
+| P3 | Hardware | A branch, jump, `trap` or `hsc` in a delay slot that executes. Exception: the slots of `jpc` and `jpcrs`, which hold the restarted instructions of an exception return |
+| P3, squashed slot | Convention | The same in a slot that is squashed, which the manual allows |
+| §9.2 | Convention | A load in the second delay slot of a branch or jump, even a squashed one (same exception). Spec §9: legal on the hardware |
+| P4 | Hardware | `mstart`, `mstep`, `dstep` or `movfrs md` right after `movtos md` |
+| P4, after a step | Convention | `movfrs md` or `movtos md` right after a step; stricter than the manual |
+| P5 | Hardware | Misaligned word or halfword access |
+| P6 | — | Not a hazard: counted as a stall cycle. Spec §9: legal |
 
 ## Variants
 
@@ -170,18 +200,21 @@ simulator, so a wrong fact in the spec would leave every test passing.
 A variant replaces one fact that rests on a Hypothesis, or on the manual
 alone, with a plausible alternative. If a program that passes normally
 fails under a variant, the program depends on that fact, and the fact
-needs checking on hardware. `tests/variant_sweep.py` runs whole suites
+needs checking on hardware. Some variants were written before the spec
+settled their fact by simulation (marked "settled" below); they stay so
+that a program's dependence on the fact can still be shown, but a
+failure under them no longer points at an open question. `tests/variant_sweep.py` runs whole suites
 this way (`../tests/README.md`).
 
 Semantic variants change what an instruction does:
 
 | Variant | Instead of the spec |
 |---|---|
-| `ldb-swap` | Opcode 100 (`ldbu`) sign-extends and 101 (`ldb`) zero-extends. Spec §3 marks signedness as a Hypothesis |
+| `ldb-swap` | Opcode 100 (`ldbu`) sign-extends and 101 (`ldb`) zero-extends. Half settled: spec §3 says 100 zero-extends (Simulated); 101 is still a Hypothesis |
 | `ldh-swap` | The same for halfwords: 001 (`ldhu`) sign-extends, 111 (`ldh`) zero-extends |
-| `bic-swap` | `bic` is Src1 & ~Src2, as the manual's comment column says, not Src2 & ~Src1 |
+| `bic-swap` | `bic` is Src1 & ~Src2, as the manual's comment column says, not Src2 & ~Src1. Settled: spec §5 confirms ~Src1 & Src2 (Simulated) |
 | `shift32-zero` | `sh` and `asr` with n = 32 (shift field e = 0) shift by 0, as a 5-bit shifter would |
-| `squash-taken` | SQ = 1 squashes the delay slots when the branch is taken rather than when it is not |
+| `squash-taken` | SQ = 1 squashes the delay slots when the branch is taken rather than when it is not. Settled: spec §4 confirms the spec reading (Simulated) |
 | `dstep-borrow` | `dstep` subtracts when the 33-bit value (Src1 << 1 \| MSB(MD)) is at least Src2, rather than when the 32-bit difference has its MSB clear. The two agree whenever Src2 ≤ 2³¹ and the partial remainder is below Src2 |
 
 Rule variants add a pipeline rule, reported as a hazard like those
@@ -189,8 +222,8 @@ above (`--hazards` applies):
 
 | Variant | Extra rule |
 |---|---|
-| `load-delay-2` | Loads have two delay slots: P1 also applies to the second instruction after a load (a squashed slot counts as one) |
-| `store-mem` | A memory instruction right after a store is a hazard rather than a stall (P6) |
+| `load-delay-2` | Loads have two delay slots: P1 also applies to the second instruction after a load (a squashed slot counts as one). Settled: spec §9 says one slot (Simulated) |
+| `store-mem` | A memory instruction right after a store is a hazard rather than a stall (P6). Settled: spec §9 says the pair is legal (Simulated) |
 | `md-delay-2` | P4 also applies with one instruction in between |
 | `icache` | Fetching a word that was stored to since the program was loaded is a hazard: an instruction cache that stores do not update |
 

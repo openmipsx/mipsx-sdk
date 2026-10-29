@@ -28,6 +28,46 @@
 
 enum hazmode { HAZ_ERROR, HAZ_WARN, HAZ_OFF };
 
+/* Pipeline rules (abi §9), and whether each one is a rule of the hardware
+ * or a convention of our ABI that the hardware does not need (spec §9:
+ * vendor code breaks P2 and §9.2 and runs correctly).  Rule variants are
+ * a class of their own: hypotheses about the hardware, asked for by name. */
+enum rclass { RC_HARDWARE, RC_CONVENTION, RC_VARIANT };
+
+static const char *const rclass_names[] = {
+  [RC_HARDWARE] = "hardware rule",
+  [RC_CONVENTION] = "ABI convention",
+  [RC_VARIANT] = "variant rule",
+};
+
+enum rule {
+  R_P1, R_P2, R_P3, R_P3_SQUASHED, R_P4, R_P4_STEP, R_P5, R_9_2,
+  R_LOAD_DELAY_2, R_STORE_MEM, R_MD_DELAY_2, R_ICACHE,
+  R_COUNT
+};
+
+static const struct rule_info {
+  const char *name;
+  enum rclass cls;
+} rules[R_COUNT] = {
+  [R_P1] = {"P1", RC_HARDWARE},
+  [R_P2] = {"P2", RC_CONVENTION},
+  [R_P3] = {"P3", RC_HARDWARE},
+  /* The manual allows a branch in a slot that is squashed; abi §9 does
+   * not. */
+  [R_P3_SQUASHED] = {"P3, squashed slot", RC_CONVENTION},
+  [R_P4] = {"P4", RC_HARDWARE},
+  /* Stricter than the manual, whose division routine reads MD right after
+   * the last dstep (abi §9.1). */
+  [R_P4_STEP] = {"P4, after a step", RC_CONVENTION},
+  [R_P5] = {"P5", RC_HARDWARE},
+  [R_9_2] = {"§9.2", RC_CONVENTION},
+  [R_LOAD_DELAY_2] = {"load-delay-2", RC_VARIANT},
+  [R_STORE_MEM] = {"store-mem", RC_VARIANT},
+  [R_MD_DELAY_2] = {"md-delay-2", RC_VARIANT},
+  [R_ICACHE] = {"icache", RC_VARIANT},
+};
+
 /* Variants (--variant): alternative readings of the processor spec where
  * it rests on a Hypothesis or on the manual alone.  Semantic variants
  * change what an instruction does; rule variants add pipeline rules,
@@ -52,21 +92,24 @@ static const struct variant {
   const char *what;
 } variants[] = {
   {"ldb-swap", V_LDB_SWAP,
-   "opcode 100 loads a signed byte and 101 an unsigned one (spec §3)"},
+   "opcode 100 loads a signed byte and 101 an unsigned one (spec §3; "
+   "100 is settled as unsigned)"},
   {"ldh-swap", V_LDH_SWAP,
    "opcode 001 loads a signed halfword and 111 an unsigned one (spec §3)"},
-  {"bic-swap", V_BIC_SWAP, "bic is Src1 & ~Src2 (spec §5)"},
+  {"bic-swap", V_BIC_SWAP, "bic is Src1 & ~Src2 (spec §5; settled the other way)"},
   {"shift32-zero", V_SHIFT32_ZERO,
    "sh and asr with n = 32 shift by 0 (a 5-bit shifter; spec §5)"},
   {"squash-taken", V_SQUASH_TAKEN,
-   "SQ = 1 squashes the delay slots when the branch is taken (spec §4)"},
+   "SQ = 1 squashes the delay slots when the branch is taken (spec §4; "
+   "settled the other way)"},
   {"dstep-borrow", V_DSTEP_BORROW,
    "dstep subtracts when the 33-bit shifted value is >= Src2, not when "
    "the 32-bit difference is non-negative (spec §5)"},
   {"load-delay-2", V_LOAD_DELAY_2,
-   "rule: loads have two delay slots (P1 at distance 2)"},
+   "rule: loads have two delay slots (P1 at distance 2; spec §9 says one)"},
   {"store-mem", V_STORE_MEM,
-   "rule: no memory instruction right after a store (P6 as a hazard)"},
+   "rule: no memory instruction right after a store (P6 as a hazard; "
+   "spec §9 says legal)"},
   {"md-delay-2", V_MD_DELAY_2,
    "rule: P4 also applies two instructions apart"},
   {"icache", V_ICACHE,
@@ -118,6 +161,8 @@ struct cpu {
   uint32_t prev_pc;
 
   enum hazmode hz;
+  int hw_only;       /* --hazard-rules=hardware: skip ABI conventions */
+  uint64_t rule_count[R_COUNT];
   unsigned variant;  /* V_* */
   uint32_t *stored;  /* one bit per RAM word stored to (V_ICACHE) */
   struct dcache dc[DCACHE_SIZE];
@@ -148,12 +193,14 @@ __attribute__((noreturn)) static void halt(struct cpu *c, int status) {
 }
 
 static void vreport(struct cpu *c, const char *kind, uint32_t pcw,
-                    const char *fmt, va_list ap) {
+                    const char *tag, const char *fmt, va_list ap) {
   char loc[160];
   fflush(stdout);
   where(c, pcw, loc, sizeof loc);
   fprintf(stderr, "mipsx-sim: %s: %s: ", kind, loc);
   vfprintf(stderr, fmt, ap);
+  if (tag)
+    fprintf(stderr, " [%s]", tag);
   fprintf(stderr, " (cycle %" PRIu64 ")\n", c->cycles);
 }
 
@@ -162,18 +209,22 @@ __attribute__((noreturn, format(printf, 3, 4)))
 static void sim_error(struct cpu *c, uint32_t pcw, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  vreport(c, "error", pcw, fmt, ap);
+  vreport(c, "error", pcw, NULL, fmt, ap);
   va_end(ap);
   halt(c, EXIT_SIM_ERROR);
 }
 
-/* A pipeline rule violation (abi §9): an error, a warning or nothing. */
-__attribute__((format(printf, 3, 4)))
-static void hazard(struct cpu *c, uint32_t pcw, const char *fmt, ...) {
+/* A pipeline rule violation (abi §9): an error, a warning or nothing.
+ * The report is tagged with the rule's class. */
+__attribute__((format(printf, 4, 5)))
+static void hazard(struct cpu *c, enum rule rule, uint32_t pcw,
+                   const char *fmt, ...) {
   va_list ap;
-  if (c->hz == HAZ_OFF)
+  enum rclass cls = rules[rule].cls;
+  if (c->hz == HAZ_OFF || (c->hw_only && cls == RC_CONVENTION))
     return;
   c->warnings++;
+  c->rule_count[rule]++;
   if (c->hz == HAZ_WARN && c->warnings > 100) {
     if (c->warnings == 101)
       fprintf(stderr, "mipsx-sim: warning: too many hazard warnings; "
@@ -181,7 +232,8 @@ static void hazard(struct cpu *c, uint32_t pcw, const char *fmt, ...) {
     return;
   }
   va_start(ap, fmt);
-  vreport(c, c->hz == HAZ_ERROR ? "error" : "warning", pcw, fmt, ap);
+  vreport(c, c->hz == HAZ_ERROR ? "error" : "warning", pcw,
+          rclass_names[cls], fmt, ap);
   va_end(ap);
   if (c->hz == HAZ_ERROR)
     halt(c, EXIT_SIM_ERROR);
@@ -249,7 +301,7 @@ static uint32_t check_addr(struct cpu *c, uint32_t addr, unsigned size,
                            uint32_t pcw, const struct insn *in) {
   if (addr & (size - 1)) {
     char d[64];
-    hazard(c, pcw, "misaligned %u-byte access to 0x%08x (P5): %s", size, addr,
+    hazard(c, R_P5, pcw, "misaligned %u-byte access to 0x%08x (P5): %s", size, addr,
            disas(pcw, in, d, sizeof d));
     addr &= ~(uint32_t)(size - 1); /* the hardware drops the low bits */
   }
@@ -384,7 +436,7 @@ __attribute__((noinline)) static void step(struct cpu *c) {
     word = 0x60000019u;
   if (c->stored && have && !squashed &&
       (c->stored[pcw / 32] >> (pcw % 32) & 1))
-    hazard(c, pcw, "fetch of a word stored to since the program was loaded "
+    hazard(c, R_ICACHE, pcw, "fetch of a word stored to since the program was loaded "
            "(variant icache)");
   {
     /* Direct-mapped decode cache, keyed by the instruction word so that
@@ -405,10 +457,10 @@ __attribute__((noinline)) static void step(struct cpu *c) {
     char o[160];
     where(c, c->owner[0], o, sizeof o);
     if (in->flags & F_CTL)
-      hazard(c, pcw, "%s in delay slot %d of the %s at %s (P3)",
+      hazard(c, squashed ? R_P3_SQUASHED : R_P3, pcw, "%s in delay slot %d of the %s at %s (P3)",
              disas(pcw, in, d, sizeof d), slot, mx_opname(owner_op), o + 3);
     if (slot == 2 && (in->flags & F_LOAD))
-      hazard(c, pcw, "load in the second delay slot of the %s at %s "
+      hazard(c, R_9_2, pcw, "load in the second delay slot of the %s at %s "
              "(abi §9.2): %s", mx_opname(owner_op), o + 3,
              disas(pcw, in, d, sizeof d));
   }
@@ -420,7 +472,7 @@ __attribute__((noinline)) static void step(struct cpu *c) {
 
   /* Shift the fetch queue; the new entry defaults to sequential. */
   uint32_t q1 = c->q[1];
-  uint32_t next = c->q[2] + 1;
+  uint32_t next = (c->q[2] + 1) & CODE_MASK;
   c->q[0] = c->q[1]; c->sqd[0] = c->sqd[1]; c->slot[0] = c->slot[1];
   c->owner[0] = c->owner[1]; c->owner_op[0] = c->owner_op[1];
   c->q[1] = c->q[2]; c->sqd[1] = c->sqd[2]; c->slot[1] = c->slot[2];
@@ -446,7 +498,8 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   }
 
   if (in->op == OP_INVALID)
-    sim_error(c, pcw, "undefined instruction 0x%08x: %s", word, in->why);
+    sim_error(c, pcw, "%s instruction 0x%08x: %s",
+              in->unknown ? "unknown" : "undefined", word, in->why);
   if ((in->flags & F_ES3890) && !c->es3890)
     sim_error(c, pcw, "%s is an ES3890 instruction, but the program's "
               "e_flags lack EF_MIPSX_ES3890", mx_opname(in->op));
@@ -455,26 +508,26 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   if (c->load_reg && (in->reads & bitr((unsigned)c->load_reg))) {
     char lp[160];
     where(c, c->load_pc, lp, sizeof lp);
-    hazard(c, pcw, "load-use hazard (P1): %s reads r%d, loaded by the "
+    hazard(c, R_P1, pcw, "load-use hazard (P1): %s reads r%d, loaded by the "
            "previous instruction at %s", disas(pcw, in, d, sizeof d),
            c->load_reg, lp + 3);
   }
   if (c->md_prev == 1 &&
       ((in->flags & F_MD) || (in->op == OP_MOVFRS && in->spec == SPEC_MD)))
-    hazard(c, pcw, "MD hazard (P4): %s right after movtos to md",
+    hazard(c, R_P4, pcw, "MD hazard (P4): %s right after movtos to md",
            disas(pcw, in, d, sizeof d));
   if (c->md_prev == 2 && (in->op == OP_MOVFRS || in->op == OP_MOVTOS) &&
       in->spec == SPEC_MD)
-    hazard(c, pcw, "MD hazard (P4): %s right after a multiply or divide "
+    hazard(c, R_P4_STEP, pcw, "MD hazard (P4): %s right after a multiply or divide "
            "step", disas(pcw, in, d, sizeof d));
   if ((in->flags & F_LOAD) && in->dest && in->dest == in->src1)
-    hazard(c, pcw, "load overwrites its own address register r%u (P2): %s",
+    hazard(c, R_P2, pcw, "load overwrites its own address register r%u (P2): %s",
            in->dest, disas(pcw, in, d, sizeof d));
   if ((c->variant & V_LOAD_DELAY_2) && c->load_reg2 &&
       (in->reads & bitr((unsigned)c->load_reg2))) {
     char lp[160];
     where(c, c->load_pc2, lp, sizeof lp);
-    hazard(c, pcw, "load-use hazard at distance 2 (variant load-delay-2): "
+    hazard(c, R_LOAD_DELAY_2, pcw, "load-use hazard at distance 2 (variant load-delay-2): "
            "%s reads r%d, loaded at %s", disas(pcw, in, d, sizeof d),
            c->load_reg2, lp + 3);
   }
@@ -483,11 +536,11 @@ __attribute__((noinline)) static void step(struct cpu *c) {
                              (in->op == OP_MOVFRS && in->spec == SPEC_MD))) ||
        (c->md_prev2 == 2 && (in->op == OP_MOVFRS || in->op == OP_MOVTOS) &&
         in->spec == SPEC_MD)))
-    hazard(c, pcw, "MD hazard at distance 2 (variant md-delay-2): %s",
+    hazard(c, R_MD_DELAY_2, pcw, "MD hazard at distance 2 (variant md-delay-2): %s",
            disas(pcw, in, d, sizeof d));
   if (c->prev_store && (in->flags & F_MEM)) {
     if (c->variant & V_STORE_MEM)
-      hazard(c, pcw, "memory instruction right after a store (variant "
+      hazard(c, R_STORE_MEM, pcw, "memory instruction right after a store (variant "
              "store-mem): %s", disas(pcw, in, d, sizeof d));
     c->stalls++; /* P6: performance only */
     c->cycles++;
@@ -536,7 +589,7 @@ __attribute__((noinline)) static void step(struct cpu *c) {
     int squash = in->sq && (c->variant & V_SQUASH_TAKEN ? taken : !taken);
     if (taken) {
       redirect = 1;
-      target = pcw + 2 + (uint32_t)in->imm;
+      target = (pcw + 2 + (uint32_t)in->imm) & CODE_MASK;
     }
     if (squash)
       c->sqd[0] = c->sqd[1] = 1;
@@ -602,7 +655,7 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   case OP_JSPCI:
     ctl = 1;
     redirect = 1;
-    target = a + (uint32_t)in->imm;
+    target = (a + (uint32_t)in->imm) & CODE_MASK; /* spec §6 */
     res = pcw + 3;
     break;
   case OP_MOVFRS:
@@ -648,7 +701,7 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   case OP_JPC:
     ctl = 1;
     redirect = 1;
-    target = chain_rotate(c);
+    target = chain_rotate(c) & CODE_MASK;
     break;
   case OP_TRAP:
     c->chain[0] = c->prev_pc;
@@ -760,6 +813,10 @@ static void usage(FILE *f) {
     "      --hazards=MODE      error (default), warn or off: what to do on\n"
     "                          a pipeline rule violation (abi.md §9)\n"
     "  -w, --warn-hazards      same as --hazards=warn\n"
+    "      --hazard-rules=SET  all (default) or hardware: hardware leaves out\n"
+    "                          the rules that are ABI conventions (P2, the\n"
+    "                          squashed-slot part of P3, the step part of P4,\n"
+    "                          §9.2)\n"
     "  -m, --mem-size=BYTES    size of RAM at address 0 (default 0x200000)\n"
     "  -s, --stats             print cycle and instruction counts at exit\n"
     "  -d, --disassemble       print the program's code and exit\n"
@@ -819,6 +876,7 @@ int main(int argc, char **argv) {
     {"max-cycles", required_argument, 0, 'c'},
     {"hazards", required_argument, 0, 'H'},
     {"warn-hazards", no_argument, 0, 'w'},
+    {"hazard-rules", required_argument, 0, 'R'},
     {"mem-size", required_argument, 0, 'm'},
     {"stats", no_argument, 0, 's'},
     {"disassemble", no_argument, 0, 'd'},
@@ -850,6 +908,15 @@ int main(int argc, char **argv) {
       }
       break;
     case 'w': c->hz = HAZ_WARN; break;
+    case 'R':
+      if (!strcmp(optarg, "all")) c->hw_only = 0;
+      else if (!strcmp(optarg, "hardware")) c->hw_only = 1;
+      else {
+        fprintf(stderr, "mipsx-sim: error: --hazard-rules must be all or "
+                        "hardware\n");
+        return EXIT_LOAD_ERROR;
+      }
+      break;
     case 'm':
       if (parse_u64(optarg, &memsize) || memsize < 4096 ||
           memsize > 0xF0000000ull || (memsize & 3)) {
@@ -923,9 +990,14 @@ int main(int argc, char **argv) {
             ", delay slots %" PRIu64 " (nop %" PRIu64 ")%s\n",
             c->cycles, c->instret, c->squashed, c->stalls, c->slots,
             c->slot_nops, c->warnings ? ", hazards reported" : "");
-  if (c->hz == HAZ_WARN && c->warnings)
+  if (c->hz == HAZ_WARN && c->warnings) {
     fprintf(stderr, "mipsx-sim: %" PRIu64 " hazard warning(s)\n",
             c->warnings);
+    for (int i = 0; i < R_COUNT; i++)
+      if (c->rule_count[i])
+        fprintf(stderr, "mipsx-sim:   %s: %" PRIu64 " [%s]\n", rules[i].name,
+                c->rule_count[i], rclass_names[rules[i].cls]);
+  }
   if (c->trace && c->trace != stderr)
     fclose(c->trace);
   return c->stop_status;

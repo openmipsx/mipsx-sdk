@@ -207,7 +207,11 @@ void mx_decode(uint32_t w, struct insn *in) {
       return;
     case 1:
       if (w != 0xCFC00000u) {
-        invalid(in, "compute-immediate OP 001 other than hsc (0xCFC00000)");
+        /* Not undefined: later firmware executes these (spec §6), but
+         * what they do is unknown. */
+        invalid(in, "compute-immediate OP 001 other than hsc (0xCFC00000), "
+                    "whose function is unknown (spec §6)");
+        in->unknown = 1;
         return;
       }
       in->op = OP_HSC;
