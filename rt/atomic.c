@@ -4,8 +4,10 @@
  * MIPS-X has no atomic instructions and the ES3890 has one CPU, so Clang
  * and the backend turn every atomic operation into a call to one of the
  * libatomic-style functions below. Each one runs with interrupts masked:
- * it sets the PSW I bit (bit 2 in the manual's Figure 2-3; not confirmed
- * for the ES3890, abi.md section 2.3) and restores the old PSW afterwards.
+ * it sets the PSW M bit, the interrupt mask (bit 4, from the manual's
+ * Figure 2-3 and section 2.4; not confirmed for the ES3890, abi.md
+ * section 2.3), and restores the old PSW afterwards. (The I bit, bit 2,
+ * only records whether the last exception was an interrupt.)
  * In user state `movtos psw` does nothing, so there the functions are
  * plain loads and stores; that is still atomic with respect to other code
  * on this CPU unless an interrupt handler touches the same object.
@@ -22,12 +24,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PSW_I 0x4u /* interrupts masked */
+#define PSW_M 0x10u /* interrupt mask */
 
 static inline unsigned irq_save(void) {
   unsigned psw;
   __asm__ volatile("movfrs psw,%0" : "=r"(psw)::"memory");
-  __asm__ volatile("movtos %0,psw" ::"r"(psw | PSW_I) : "memory");
+  __asm__ volatile("movtos %0,psw" ::"r"(psw | PSW_M) : "memory");
   return psw;
 }
 

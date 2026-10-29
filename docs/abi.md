@@ -942,8 +942,8 @@ Clang (S13) sets the maximum inline atomic width to 0 and the backend
 become calls to libatomic-style functions (`__atomic_load_4`,
 `__atomic_fetch_add_2`, `__atomic_compare_exchange_8`, the generic
 `__atomic_load` and so on). `rt/atomic.c` in `libbuiltins.a` implements
-them by setting the PSW I bit around a plain access and restoring the PSW
-afterwards; every memory order is treated as `seq_cst`. The bit position
+them by setting the PSW M bit (the interrupt mask) around a plain access
+and restoring the PSW afterwards; every memory order is treated as `seq_cst`. The bit position
 comes from the manual and is unconfirmed for the ES3890 (§2.3), and in
 user state `movtos psw` does nothing, so there the functions are atomic
 only with respect to code that is not an interrupt handler. A fence emits
