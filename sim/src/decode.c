@@ -19,10 +19,11 @@ static const char *const opnames[OP_COUNT] = {
   [OP_ADD] = "add", [OP_SUB] = "sub", [OP_SUBNC] = "subnc", [OP_AND] = "and",
   [OP_BIC] = "bic", [OP_NOT] = "not", [OP_OR] = "or", [OP_XOR] = "xor",
   [OP_MSTART] = "mstart", [OP_MSTEP] = "mstep", [OP_DSTEP] = "dstep",
-  [OP_ROTLB] = "rotlb", [OP_ROTLCB] = "rotlcb", [OP_SH] = "sh", [OP_ASR] = "asr",
-  [OP_ADDI] = "addi", [OP_JSPCI] = "jspci", [OP_MOVFRS] = "movfrs",
-  [OP_MOVTOS] = "movtos", [OP_JPC] = "jpc", [OP_JPCRS] = "jpcrs",
-  [OP_HSC] = "hsc", [OP_TRAP] = "trap",
+  [OP_ROTLB] = "rotlb", [OP_SHLV] = "shlv", [OP_SHAV] = "shav", [OP_SH] = "sh",
+  [OP_ASR] = "asr",
+  [OP_ADDI] = "addi", [OP_ANDI] = "andi", [OP_JSPCI] = "jspci",
+  [OP_MOVFRS] = "movfrs", [OP_MOVTOS] = "movtos", [OP_JPC] = "jpc",
+  [OP_JPCRS] = "jpcrs", [OP_HSC] = "hsc", [OP_TRAP] = "trap",
 };
 
 const char *mx_opname(enum op op) {
@@ -136,7 +137,11 @@ void mx_decode(uint32_t w, struct insn *in) {
       if (func == 0x0C0) {
         in->op = OP_ROTLB;
       } else if (func == 0x080) {
-        in->op = OP_ROTLCB;
+        /* The manual's rotlcb; a shift by a signed count in later firmware
+         * (spec §5).  sim.c picks the reading. */
+        in->op = OP_SHLV;
+      } else if (func == 0x180) {
+        in->op = OP_SHAV;
       } else if ((func & 0xF80) == 0x200 || (func & 0xF80) == 0x100) {
         int n = shift_amount(func);
         if (!n) {
@@ -211,17 +216,16 @@ void mx_decode(uint32_t w, struct insn *in) {
       in->op = op == 5 ? OP_JPC : OP_JPCRS;
       in->flags = F_JUMP;
       return;
-    case 1:
-      if (w != 0xCFC00000u) {
-        /* Not undefined: later firmware executes these (spec §6), but
-         * what they do is unknown. */
-        invalid(in, "compute-immediate OP 001 other than hsc (0xCFC00000), "
-                    "whose function is unknown (spec §6)");
-        in->unknown = 1;
+    case 1: /* hsc is the one word 0xCFC00000; the rest are andi */
+      if (w == 0xCFC00000u) {
+        in->op = OP_HSC;
+        in->flags = F_TRAPLIKE;
         return;
       }
-      in->op = OP_HSC;
-      in->flags = F_TRAPLIKE;
+      in->op = OP_ANDI;
+      in->dest = s2;
+      in->wreg = s2 ? (int)s2 : -1;
+      in->reads = bit(s1);
       return;
     case 6: /* trap */
       if ((func & 7) != 3 || (func & 0x800)) {
@@ -293,8 +297,8 @@ void mx_disasm(const struct insn *in, uint32_t pc, char *buf, size_t n) {
   case OP_ASR:
     snprintf(buf, n, "asr r%u,r%u,#%d", in->src1, in->dest, in->imm);
     return;
-  case OP_ADDI:
-    snprintf(buf, n, "addi r%u,#%d,r%u", in->src1, in->imm, in->dest);
+  case OP_ADDI: case OP_ANDI:
+    snprintf(buf, n, "%s r%u,#%d,r%u", name, in->src1, in->imm, in->dest);
     return;
   case OP_JSPCI:
     if (in->src1 == 31 && in->imm == 0 && in->dest == 0)

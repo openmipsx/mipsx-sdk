@@ -1,4 +1,6 @@
-; sh (funnel shift), asr, rotlb, rotlcb and the lsl/lsr aliases (spec §5).
+; sh (funnel shift), asr, rotlb and the lsl/lsr aliases (spec §5).
+; Func 0x080 (shlv, or rotlcb under a variant) is in vshift.s and
+; variant_rotlcb.s.
 ; STDERR-EMPTY
 _start:
     li    0x89ABCDEF,r4
@@ -41,12 +43,8 @@ _start:
     addi  r0,#0x51,r8
     rotlb r7,r8,r9
     expect r9,0x01CD23AB
-    rotlcb r7,r8,r9
-    expect r9,0xCD23AB01
     rotlb r7,r0,r9            ; by 0
     expect r9,0xAB01CD23
-    rotlcb r7,r0,r9           ; by 3
-    expect r9,0x23AB01CD
     addi  r0,#3,r8
     rotlb r7,r8,r9
     expect r9,0x23AB01CD

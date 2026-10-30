@@ -84,7 +84,15 @@ enum {
   V_STORE_MEM = 1u << 7,
   V_MD_DELAY_2 = 1u << 8,
   V_ICACHE = 1u << 9,
+  V_ROTLCB = 1u << 10,
+  V_ANDI_ZEXT = 1u << 11,
+  V_OP001_OR = 1u << 12,
+  V_OP001_NOP = 1u << 13,
 };
+
+/* Competing readings of compute-immediate OP 001 (spec §6 andi): at most
+ * one may be chosen. */
+#define V_OP001 (V_ANDI_ZEXT | V_OP001_OR | V_OP001_NOP)
 
 static const struct variant {
   const char *name;
@@ -106,6 +114,15 @@ static const struct variant {
   {"dstep-borrow", V_DSTEP_BORROW,
    "dstep subtracts when the 33-bit shifted value is >= Src2, not when "
    "the 32-bit difference is non-negative (spec §5)"},
+  {"rotlcb", V_ROTLCB,
+   "Func 0x080 is the manual's rotlcb, not a logical shift by a signed "
+   "count (spec §5)"},
+  {"andi-zext", V_ANDI_ZEXT,
+   "andi zero-extends its immediate from 17 bits (spec §6)"},
+  {"op001-or", V_OP001_OR,
+   "compute-immediate OP 001 is Src1 | SignExtend(imm17), not & (spec §6)"},
+  {"op001-nop", V_OP001_NOP,
+   "compute-immediate OP 001 other than hsc leaves Dest unchanged (spec §6)"},
   {"load-delay-2", V_LOAD_DELAY_2,
    "rule: loads have two delay slots (P1 at distance 2; spec §9 says one)"},
   {"store-mem", V_STORE_MEM,
@@ -547,8 +564,7 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   }
 
   if (in->op == OP_INVALID)
-    sim_error(c, pcw, "%s instruction 0x%08x: %s",
-              in->unknown ? "unknown" : "undefined", word, in->why);
+    sim_error(c, pcw, "undefined instruction 0x%08x: %s", word, in->why);
   if ((in->flags & F_ES3890) && !c->es3890)
     sim_error(c, pcw, "%s is an ES3890 instruction, but the program's "
               "e_flags lack EF_MIPSX_ES3890", mx_opname(in->op));
@@ -682,9 +698,27 @@ __attribute__((noinline)) static void step(struct cpu *c) {
     break;
   }
   case OP_ROTLB:
-  case OP_ROTLCB: {
-    unsigned k = (in->op == OP_ROTLB ? b : ~b) & 3;
-    res = k ? (a << (8 * k)) | (a >> (32 - 8 * k)) : a;
+  case OP_SHLV:
+    if (in->op == OP_ROTLB || (c->variant & V_ROTLCB)) {
+      unsigned k = (in->op == OP_ROTLB ? b : ~b) & 3; /* rotlcb: ~Src2 */
+      res = k ? (a << (8 * k)) | (a >> (32 - 8 * k)) : a;
+      break;
+    }
+    /* fall through */
+  case OP_SHAV: {
+    /* Shift Src1 by the signed count in Src2: left if Src2 >= 0, right by
+     * -Src2 if negative; shav shifts in sign bits, shlv zeros (spec §5).
+     * The spec leaves counts outside -31..31 unknown. */
+    int32_t k = (int32_t)b;
+    if (k < -31 || k > 31)
+      sim_error(c, pcw, "%s count %" PRId32 " is outside -31..31, where "
+                "spec §5 leaves the result unknown", mx_opname(in->op), k);
+    if (k >= 0)
+      res = a << k;
+    else if (in->op == OP_SHAV)
+      res = (uint32_t)((int32_t)a >> -k);
+    else
+      res = a >> -k;
     break;
   }
   case OP_SH: {
@@ -701,6 +735,16 @@ __attribute__((noinline)) static void step(struct cpu *c) {
                          : (uint32_t)((int32_t)a >> in->imm);
     break;
   case OP_ADDI: res = a + (uint32_t)in->imm; break;
+  case OP_ANDI:
+    if (c->variant & V_ANDI_ZEXT)
+      res = a & ((uint32_t)in->imm & 0x1FFFF);
+    else if (c->variant & V_OP001_OR)
+      res = a | (uint32_t)in->imm;
+    else if (c->variant & V_OP001_NOP)
+      write = 0;
+    else
+      res = a & (uint32_t)in->imm;
+    break;
   case OP_JSPCI:
     ctl = 1;
     redirect = 1;
@@ -980,6 +1024,11 @@ int main(int argc, char **argv) {
       switch (parse_variants(optarg, &c->variant)) {
       case 1: return 0;
       case -1: return EXIT_LOAD_ERROR;
+      }
+      if ((c->variant & V_OP001) & ((c->variant & V_OP001) - 1)) {
+        fprintf(stderr, "mipsx-sim: error: andi-zext, op001-or and "
+                        "op001-nop are alternatives; choose one\n");
+        return EXIT_LOAD_ERROR;
       }
       break;
     case 'h': usage(stdout); return 0;

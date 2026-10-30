@@ -448,9 +448,10 @@ class Assembler:
             nargs(3)
             f = 0x099 if mnem == "mstep" else 0x166
             return 1 << 30 | 0 << 27 | reg(a[0]) << 22 | reg(a[1]) << 17 | reg(a[2]) << 12 | f
-        if mnem in ("rotlb", "rotlcb"):
+        if mnem in ("rotlb", "rotlcb", "shlv", "shav"):
+            # rotlcb and shlv are two readings of Func 0x080 (spec §5)
             nargs(3)
-            f = 0x0C0 if mnem == "rotlb" else 0x080
+            f = {"rotlb": 0x0C0, "rotlcb": 0x080, "shlv": 0x080, "shav": 0x180}[mnem]
             return 1 << 30 | 1 << 27 | reg(a[0]) << 22 | reg(a[1]) << 17 | reg(a[2]) << 12 | f
         if mnem == "sh":
             nargs(4)
@@ -471,10 +472,13 @@ class Assembler:
             nargs(3)
             return (1 << 30 | 1 << 27 | reg(a[0]) << 22 | reg(a[1]) << 12 |
                     shift_func(ev(a[2]), False))
-        if mnem in ("addi", "jspci"):
+        if mnem in ("addi", "andi", "jspci"):
             nargs(3)
-            op = 4 if mnem == "addi" else 0
-            return 3 << 30 | op << 27 | reg(a[0]) << 22 | reg(a[2]) << 17 | imm17(ev(a[1]))
+            op = {"addi": 4, "andi": 1, "jspci": 0}[mnem]
+            w = 3 << 30 | op << 27 | reg(a[0]) << 22 | reg(a[2]) << 17 | imm17(ev(a[1]))
+            if w == 0xCFC00000:  # spec §6: this word is hsc
+                raise AsmError("andi r31,#0,r0 encodes as hsc")
+            return w
         if mnem == "ret":
             return self.encode("jspci", "r31,#0,r0", pc)
         if mnem in ("call", "jmp"):

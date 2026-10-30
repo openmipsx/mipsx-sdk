@@ -69,9 +69,11 @@ enum op {
   OP_BEQ, OP_BNE, OP_BHS, OP_BLO, OP_BLT, OP_BGE,
   /* compute */
   OP_ADD, OP_SUB, OP_SUBNC, OP_AND, OP_BIC, OP_NOT, OP_OR, OP_XOR,
-  OP_MSTART, OP_MSTEP, OP_DSTEP, OP_ROTLB, OP_ROTLCB, OP_SH, OP_ASR,
+  OP_MSTART, OP_MSTEP, OP_DSTEP, OP_ROTLB, OP_SHLV, OP_SHAV, OP_SH,
+  OP_ASR,
   /* compute immediate */
-  OP_ADDI, OP_JSPCI, OP_MOVFRS, OP_MOVTOS, OP_JPC, OP_JPCRS, OP_HSC, OP_TRAP,
+  OP_ADDI, OP_ANDI, OP_JSPCI, OP_MOVFRS, OP_MOVTOS, OP_JPC, OP_JPCRS, OP_HSC,
+  OP_TRAP,
   OP_COUNT
 };
 
@@ -99,7 +101,6 @@ struct insn {
   int wreg;                  /* general register written, or -1 */
   unsigned size;             /* memory access size in bytes */
   const char *why;           /* reason when op == OP_INVALID */
-  int unknown;               /* OP_INVALID, but defined on the hardware */
 };
 
 void mx_decode(uint32_t word, struct insn *in);

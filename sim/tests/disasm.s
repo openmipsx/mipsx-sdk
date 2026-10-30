@@ -33,7 +33,7 @@
 ; STDOUT: 0000206c: 418a6099  mstep r6,r5,r6
 ; STDOUT: 00002070: 418a6166  dstep r6,r5,r6
 ; STDOUT: 00002074: 490a60c0  rotlb r4,r5,r6
-; STDOUT: 00002078: 490a6080  rotlcb r4,r5,r6
+; STDOUT: 00002078: 490a6080  shlv r4,r5,r6
 ; STDOUT: 0000207c: 490a6268  sh r4,r5,r6,#5
 ; STDOUT: 00002080: 490a6201  sh r4,r5,r6,#32
 ; STDOUT: 00002084: 490a6278  sh r4,r5,r6,#1
@@ -89,7 +89,7 @@ _start:
     mstep r6,r5,r6
     dstep r6,r5,r6
     rotlb r4,r5,r6
-    rotlcb r4,r5,r6
+    shlv  r4,r5,r6
     sh    r4,r5,r6,#5
     sh    r4,r5,r6,#32
     sh    r4,r5,r6,#1
