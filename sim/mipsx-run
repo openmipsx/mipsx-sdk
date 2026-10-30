@@ -5,13 +5,18 @@
 # Copyright 2026 The mipsx-sdk authors.
 # SPDX-License-Identifier: Apache-2.0
 #
-# usage: mipsx-run [--expect-exit=N] [--print-exit] [mipsx-sim options] prog.elf
+# usage: mipsx-run [--expect-exit=N] [--print-exit] [--args STRING]
+#                  [mipsx-sim options] prog.elf [argument...]
 #
 #   --expect-exit=N  exit 0 if the program exits with status N, else
 #                    print a message to stderr and exit 1
 #   --print-exit     after the program ends, print "exit: N" on stdout
 #                    (for FileCheck)
-#   other options are passed to mipsx-sim (see mipsx-sim --help)
+#   --args STRING    split STRING at blanks and append the words to the
+#                    program's arguments (picolibc's test harness passes
+#                    a command line this way, after prog.elf)
+#   other options are passed to mipsx-sim (see mipsx-sim --help); its
+#   options stop at prog.elf, and what follows is the program's argv
 #
 # Without --expect-exit, the exit status is the simulator's: the
 # program's own status, or 124 (cycle limit), 125 (simulation error, e.g.
@@ -25,6 +30,7 @@
 
 expect=
 print_exit=
+args=
 dir=$(dirname "$0")
 
 if [ -n "$MIPSX_SIM" ]; then
@@ -46,9 +52,23 @@ while [ "$n" -gt 0 ]; do
   case $arg in
     --expect-exit=*) expect=${arg#--expect-exit=} ;;
     --print-exit) print_exit=1 ;;
+    --args)
+      if [ "$n" -eq 0 ]; then
+        echo "mipsx-run: --args needs a string" >&2
+        exit 126
+      fi
+      args="$args $1"
+      shift
+      n=$((n - 1))
+      ;;
     *) set -- "$@" "$arg" ;;
   esac
 done
+
+# The words of --args, unglobbed, after everything else.
+set -f
+set -- "$@" $args
+set +f
 
 if [ -n "$MIPSX_RUN_MAX_CYCLES" ]; then
   set -- "--max-cycles=$MIPSX_RUN_MAX_CYCLES" "$@"

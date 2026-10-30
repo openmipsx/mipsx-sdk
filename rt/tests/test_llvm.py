@@ -90,9 +90,10 @@ class LLVMLinkTest(unittest.TestCase):
             "-o", obj)
         return obj
 
-    def link(self, script, exit_file, extra=()):
+    def link(self, script, board, extra=()):
         objs = [self.assemble(os.path.join(RT, "crt0.S")),
-                self.assemble(os.path.join(RT, exit_file)),
+                self.assemble(os.path.join(RT, "exit-%s.S" % board)),
+                self.assemble(os.path.join(RT, "args-%s.S" % board)),
                 self.assemble(os.path.join(RT, "tests", "crt0_main.s"))]
         objs += list(extra)
         elf = self.path("prog.elf")
@@ -117,21 +118,21 @@ class LLVMLinkTest(unittest.TestCase):
 
     @unittest.skipUnless(os.path.exists(SIM), "simulator not built")
     def test_sim(self):
-        elf = self.link("sim.ld", "exit-sim.S")
+        elf = self.link("sim.ld", "sim")
         self.check_layout(elf)
         self.check_runs(elf)
 
     @unittest.skipUnless(os.path.exists(SIM), "simulator not built")
     def test_sim_small_data(self):
         small = self.assemble(None, "small", SMALL_DATA)
-        elf = self.link("sim.ld", "exit-sim.S", [small])
+        elf = self.link("sim.ld", "sim", [small])
         self.check_layout(elf)
         self.check_runs(elf)
 
     def test_sim_no_headers_in_load(self):
         # Nothing is free below 0x2000 at page alignment, so the ELF and
         # program headers must not be loaded (rt/README.md).
-        elf = self.link("sim.ld", "exit-sim.S")
+        elf = self.link("sim.ld", "sim")
         out = run(tool("llvm-readelf"), "-l", "-W", elf)
         for line in out.splitlines():
             p = line.split()
@@ -139,7 +140,7 @@ class LLVMLinkTest(unittest.TestCase):
                 self.assertGreaterEqual(int(p[2], 16), 0x2000, line)
 
     def test_device_pack(self):
-        elf = self.link("device.ld", "exit-device.S")
+        elf = self.link("device.ld", "device")
         self.check_layout(elf)
         image = self.path("prog.bin")
         run(sys.executable, os.path.join(TOOLS, "mipsx_pack.py"), elf,

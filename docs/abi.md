@@ -913,7 +913,22 @@ Simulator: the same RAM map, plus the I/O page of §13.5.
    environment, and the simulator never traps on overflow.
 4. Copy `.data`/`.sdata` if their load address differs, clear `.bss`
    and `.sbss`, run `__init_array`.
-5. Call `main(0, 0)`, then call `exit` with its result.
+5. Build `main`'s arguments with the board's two hooks, below, and call
+   `main(argc, argv)`, then call `exit` with its result. crt0 calls
+   `__mipsx_args_size`, lowers sp by the size it returns (a multiple of
+   8, so sp stays 8-aligned), calls `__mipsx_args` with the new sp in
+   r4, and passes its result as `argc` and that sp as `argv`. The argv
+   block thus sits at the top of the stack, above `main`'s frame, and
+   stays valid for the life of the program.
+
+| Hook | Simulator (`args-sim.S`, in `libsim.a`) | Device (`args-device.S`, in `libdevice.a`) |
+|---|---|---|
+| `__mipsx_args_size()` | The I/O page's argv block size (§13.5) | 8 |
+| `__mipsx_args(buf)`: fill `buf`, return `argc` | The simulator writes the block: `argv[0..argc-1]`, a null pointer, the strings. `argv[0]` is the ELF's path | `buf[0]` = null; returns 0 |
+
+The hooks are ordinary functions under §7 that use no stack. The
+device has no command line, so its programs get `argc` = 0 and an
+`argv` holding only the null pointer C requires at `argv[argc]`.
 
 ### 13.4 Interrupt and exception handlers
 
@@ -940,6 +955,9 @@ it; this is the starting point:
 | 0xFFFF0014 | −65516 | Store (any width) | Write the low 8 bits to stderr (simulator extension) |
 | 0xFFFF0018 | −65512 | Load word | Instructions executed, low word (latches the high word; simulator extension) |
 | 0xFFFF001C | −65508 | Load word | Instructions executed, high word, as latched (simulator extension) |
+| 0xFFFF0020 | −65504 | Load word | `argc` of the program's command line (simulator extension) |
+| 0xFFFF0024 | −65500 | Load word | Bytes the argv block needs, a multiple of 8 (simulator extension) |
+| 0xFFFF0028 | −65496 | Store word | Write the argv block at the stored address, which must be word aligned, with the block inside RAM: `argc` + 1 word pointers (the last null), then the strings, each with its terminating 0 (simulator extension) |
 
 The exit status is the low 8 bits of the stored word, as for a host
 process. Any other access is a simulation error: a load narrower than a

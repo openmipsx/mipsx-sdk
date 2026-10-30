@@ -4,8 +4,10 @@ Work package S7 of the LLVM backend plan. Implements `docs/abi.md` §13.
 
 | File | What |
 |---|---|
-| `crt0.S` | `_start`: sp, r23/r24 code bases, gp, `.data` copy (if its load address differs), `.bss` clear, `__init_array`, then `exit(main(0, 0))` (abi §13.3) |
+| `crt0.S` | `_start`: sp, r23/r24 code bases, gp, `.data` copy (if its load address differs), `.bss` clear, `__init_array`, then the argv block from the board's hooks and `exit(main(argc, argv))` (abi §13.3) |
 | `exit-sim.S` | `_exit` (and weak `exit`) for the simulator: stores the status to the I/O page exit register (abi §13.5) |
+| `args-sim.S` | `__mipsx_args_size` and `__mipsx_args` for the simulator: the command line, through the I/O page (abi §13.3, §13.5) |
+| `args-device.S` | The same for the device: no command line, so `argc` 0 and `argv` = `{ NULL }` |
 | `exit-device.S` | `_exit` (and weak `exit`) for the device: stops in a loop (how to reset the ES3890 is not known yet) |
 | `sim.ld` | Linker script for `mipsx-sim` |
 | `device.ld` | Linker script for the SPA3000; its output goes to `tools/mipsx_pack.py` |
@@ -15,15 +17,15 @@ Work package S7 of the LLVM backend plan. Implements `docs/abi.md` §13.
 Linking with the LLVM tools:
 
 ```
-llvm-mc -triple=mipsx -filetype=obj crt0.S -o crt0.o      # likewise exit-*.S
-ld.lld -T rt/sim.ld crt0.o exit-sim.o prog.o -o prog
+llvm-mc -triple=mipsx -filetype=obj crt0.S -o crt0.o      # likewise exit-*.S, args-*.S
+ld.lld -T rt/sim.ld crt0.o exit-sim.o args-sim.o prog.o -o prog
 sim/build/mipsx-sim prog
 ```
 
-`crt0.S` and the exit files need no C preprocessor; the simulator and
-device builds differ only in which exit file is linked. Both `exit`
-definitions are weak so that a C library's `exit` (S15) takes over and
-calls our `_exit`.
+`crt0.S`, the exit files and the args files need no C preprocessor; the
+simulator and device builds differ only in which exit and args files are
+linked (`libsim.a` or `libdevice.a`). Both `exit` definitions are weak
+so that a C library's `exit` (S15) takes over and calls our `_exit`.
 
 ## Memory map (both scripts)
 

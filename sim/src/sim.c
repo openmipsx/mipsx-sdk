@@ -148,6 +148,8 @@ struct cpu {
   uint64_t max_cycles;
   uint64_t warnings;
   uint32_t cyc_hi_latch, ins_hi_latch;
+  int argc;          /* the program's command line, argv[0] its path */
+  char **argv;
 
   /* Hazard tracking: state left by the previous pipeline slot. */
   int load_reg;      /* destination of a load in the previous slot, or 0 */
@@ -249,6 +251,42 @@ static const char *disas(uint32_t pcw, const struct insn *in, char *buf,
 
 static int is_io(uint32_t addr) { return addr - IO_BASE < IO_SIZE; }
 
+/* The argv block (abi §13.5): argc + 1 word pointers (the last null),
+ * then the strings, padded to a multiple of 8 bytes. */
+static uint32_t args_size(const struct cpu *c) {
+  uint64_t n = 4 * ((uint64_t)c->argc + 1);
+  for (int i = 0; i < c->argc; i++)
+    n += strlen(c->argv[i]) + 1;
+  n = (n + 7) & ~(uint64_t)7;
+  return n > 0xFFFFFFF8u ? 0xFFFFFFF8u : (uint32_t)n;
+}
+
+static void put_word(struct cpu *c, uint32_t addr, uint32_t v) {
+  uint8_t *p = c->mem + addr;
+  p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+  p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+
+static void args_copy(struct cpu *c, uint32_t addr, uint32_t pcw) {
+  uint32_t size = args_size(c);
+  if (addr & 3)
+    sim_error(c, pcw, "argv block address 0x%08x is not word aligned", addr);
+  if (addr >= c->memsize || c->memsize - addr < size)
+    sim_error(c, pcw, "argv block of %u bytes at 0x%08x is outside RAM",
+              size, addr);
+  memset(c->mem + addr, 0, size);
+  uint32_t s = addr + 4 * ((uint32_t)c->argc + 1);
+  for (int i = 0; i < c->argc; i++) {
+    size_t len = strlen(c->argv[i]) + 1;
+    put_word(c, addr + 4 * (uint32_t)i, s);
+    memcpy(c->mem + s, c->argv[i], len);
+    s += (uint32_t)len;
+  }
+  if (c->stored)
+    for (uint32_t a = addr; a < addr + size; a += 4)
+      c->stored[a / 128] |= 1u << (a / 4 % 32);
+}
+
 static uint32_t io_load(struct cpu *c, uint32_t off, unsigned size,
                         uint32_t pcw) {
   if (size != 4)
@@ -265,6 +303,10 @@ static uint32_t io_load(struct cpu *c, uint32_t off, unsigned size,
     return (uint32_t)c->instret;
   case IO_INSTRET_HI:
     return c->ins_hi_latch;
+  case IO_ARGC:
+    return (uint32_t)c->argc;
+  case IO_ARGS_SIZE:
+    return args_size(c);
   case IO_GETCHAR: {
     fflush(stdout);
     int ch = getchar();
@@ -291,6 +333,12 @@ static void io_store(struct cpu *c, uint32_t off, unsigned size, uint32_t v,
       sim_error(c, pcw, "exit register must be written with a word store");
     c->exited = 1;
     c->exit_code = (int)v;
+    return;
+  case IO_ARGS_COPY:
+    if (size != 4)
+      sim_error(c, pcw, "argv copy register must be written with a word "
+                "store");
+    args_copy(c, v, pcw);
     return;
   }
   sim_error(c, pcw, "store to undefined I/O page address 0x%08x",
@@ -797,9 +845,10 @@ static void disassemble(const struct cpu *c) {
 
 static void usage(FILE *f) {
   fprintf(f,
-    "usage: mipsx-sim [options] program.elf\n"
+    "usage: mipsx-sim [options] program.elf [argument...]\n"
     "\n"
-    "Runs a linked MIPS-X (ES3890) ELF executable.  The exit status is the\n"
+    "Runs a linked MIPS-X (ES3890) ELF executable with the given arguments\n"
+    "(argv[0] is program.elf as given).  The exit status is the\n"
     "program's exit status (low 8 bits of the value stored to the exit\n"
     "register), or 124 if the cycle limit was reached, 125 on a simulation\n"
     "error (pipeline hazard, bad memory access, undefined instruction),\n"
@@ -887,7 +936,7 @@ int main(int argc, char **argv) {
   };
   int o;
   c->hz = HAZ_ERROR;
-  while ((o = getopt_long(argc, argv, "tc:wm:sdhV", opts, NULL)) != -1) {
+  while ((o = getopt_long(argc, argv, "+tc:wm:sdhV", opts, NULL)) != -1) {
     switch (o) {
     case 't': trace = 1; break;
     case 'T': trace_file = optarg; break;
@@ -937,7 +986,7 @@ int main(int argc, char **argv) {
     default: usage(stderr); return EXIT_LOAD_ERROR;
     }
   }
-  if (optind != argc - 1) {
+  if (optind >= argc) {
     usage(stderr);
     return EXIT_LOAD_ERROR;
   }
@@ -952,6 +1001,8 @@ int main(int argc, char **argv) {
   }
   if (elf_load(argv[optind], c->mem, c->memsize, &c->prog))
     return EXIT_LOAD_ERROR;
+  c->argc = argc - optind;
+  c->argv = argv + optind;
   if (dis) {
     disassemble(c);
     return 0;

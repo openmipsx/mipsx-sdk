@@ -17,8 +17,12 @@ make install PREFIX=...   # installs mipsx-sim and mipsx-run into PREFIX/bin
 ## Running
 
 ```
-mipsx-sim [options] program.elf
+mipsx-sim [options] program.elf [argument...]
 ```
+
+Options stop at `program.elf`; it and the words after it are the
+program's command line, `argv[0]` being the path as given. crt0 passes
+them to `main` through the I/O page (abi §13.3, §13.5).
 
 | Option | Meaning |
 |---|---|
@@ -54,12 +58,13 @@ mipsx-sim: error: pc 0x00002008 <_start+0x8>: load-use hazard (P1): mov r4,r5 re
 
 For lit and other harnesses. It finds the simulator (`$MIPSX_SIM`, else
 `mipsx-sim` next to the script, else `build/mipsx-sim` next to it, else
-`PATH`), passes all other options to it, and adds:
+`PATH`), passes all other options and arguments to it in order, and adds:
 
 | Option | Meaning |
 |---|---|
 | `--expect-exit=N` | Exit 0 if the program's status is N, else print a message and exit 1 |
 | `--print-exit` | After the run, print `exit: N` on stdout, for FileCheck |
+| `--args STRING` | Split STRING at blanks (no globbing) and append the words to the program's arguments. picolibc's tests pass their command line this way, after the ELF; may be repeated |
 
 `$MIPSX_RUN_MAX_CYCLES`, if set, becomes `--max-cycles` (an explicit
 option wins). Without `--expect-exit` the status is the simulator's.
@@ -245,8 +250,13 @@ registers are abi §13.5; the rest are simulator extensions.
 | 0xFFFF0014 | −65516 | Store, any width | Write the low 8 bits to stderr (extension) |
 | 0xFFFF0018 | −65512 | Load word | Instructions executed, low word (latches the high word; extension) |
 | 0xFFFF001C | −65508 | Load word | Instructions executed, high word, as latched (extension) |
+| 0xFFFF0020 | −65504 | Load word | `argc` (extension) |
+| 0xFFFF0024 | −65500 | Load word | Bytes the argv block needs, a multiple of 8 (extension) |
+| 0xFFFF0028 | −65496 | Store word | Write the argv block at the stored address: `argc` + 1 word pointers (the last null), then the strings (extension) |
 
-Other addresses in the page, and loads narrower than a word, are errors.
+Other addresses in the page, loads narrower than a word, and an argv
+block address that is not word aligned or whose block does not fit in
+RAM are errors.
 
 ## Tests
 

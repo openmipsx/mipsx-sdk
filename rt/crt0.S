@@ -9,9 +9,12 @@
 ; the file is .S only by convention, so that Clang's driver accepts it.
 ;
 ; _start is entered with the stack pointer and the code base registers in
-; any state.  It does not return.  main is called as main(0, 0); its
-; result is passed to exit, which rt/exit-sim.S (simulator: the I/O page
-; exit register) or rt/exit-device.S (device: stop) provides.
+; any state.  It does not return.  main is called with argc and argv
+; from the board's hooks in rt/args-sim.S (simulator: the command line,
+; through the I/O page) or rt/args-device.S (device: none); the argv
+; block sits at the top of the stack, above main's frame.  main's result
+; is passed to exit, which rt/exit-sim.S (simulator: the I/O page exit
+; register) or rt/exit-device.S (device: stop) provides.
 ;
 ; Every branch and jump below has its two delay slots written out, and no
 ; loaded register is read by the next instruction (abi §9).
@@ -83,9 +86,19 @@ _start:
     nop
     nop
 .Linit_done:
-    ; 5. exit(main(0, 0)).
-    mov     r0,r4
-    mov     r0,r5
+    ; 5. exit(main(argc, argv)).  Make room for the argv block at the
+    ;    top of the stack (the size keeps sp 8-aligned), have the board
+    ;    fill it in, and pass its address as argv.
+    call    __mipsx_args_size
+    nop
+    nop
+    sub     sp,r2,sp
+    mov     sp,r4
+    call    __mipsx_args
+    nop
+    nop
+    mov     r2,r4
+    mov     sp,r5
     call    main
     nop
     nop

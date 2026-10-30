@@ -24,18 +24,23 @@ main:
     bne     r8,gp,fail
     nop
     nop
-    ; sp is __stack_top: crt0 used no stack.
-    la      __stack_top,r8
+    ; sp is argv: crt0 used no stack beyond the argv block, which is
+    ; below __stack_top.
     addi    r0,#13,r2
-    bne     r8,sp,fail
+    bne     r5,sp,fail
     nop
     nop
-    ; main(0, 0)
+    la      __stack_top,r8
+    bhs     r5,r8,fail
+    nop
+    nop
+    ; argv[argc] is null.
+    add     r4,r4,r8
+    add     r8,r8,r8
+    add     r5,r8,r8
+    ld      0[r8],r9
     addi    r0,#14,r2
-    bne     r4,r0,fail
-    nop
-    nop
-    bne     r5,r0,fail
+    bne     r9,r0,fail
     nop
     nop
     ; .data holds its initial values (copied if it runs elsewhere).

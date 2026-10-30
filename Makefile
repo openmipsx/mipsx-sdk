@@ -13,7 +13,7 @@
 #                 builds the run-time with llvm-mc and llvm-ar into a sysroot
 #                 for clang --target=mipsx (build/sysroot, or SYSROOT=dir):
 #                 lib/crt0.o, lib/{sim,device}.ld, lib/lib{sim,device}.a
-#                 (_exit), lib/libbuiltins.a (rt/builtins, rt/atomic.c and
+#                 (_exit and the argv hooks), lib/libbuiltins.a (rt/builtins, rt/atomic.c and
 #                 compiler-rt's generic builtins, compiled with the clang in
 #                 MIPSX_LLVM_BIN from COMPILER_RT, by default the
 #                 compiler-rt/lib/builtins of the llvm-project checkout that
@@ -103,9 +103,9 @@ $(SYSROOT)/lib/%.ld: rt/%.ld
 
 # Once picolibc is installed (make libc), libsim.a also carries its
 # simulator stdio, libsemihost.a.
-$(SYSROOT)/lib/libsim.a: $(RTOBJ)/exit-sim.o $(wildcard $(SYSROOT)/lib/libsemihost.a)
+$(SYSROOT)/lib/libsim.a: $(RTOBJ)/exit-sim.o $(RTOBJ)/args-sim.o $(wildcard $(SYSROOT)/lib/libsemihost.a)
 	@mkdir -p $(dir $@)
-	rm -f $@ && $(MIPSX_LLVM_BIN)/llvm-ar rcs $@ $<
+	rm -f $@ && $(MIPSX_LLVM_BIN)/llvm-ar rcs $@ $(filter %.o,$^)
 	if [ -f $(SYSROOT)/lib/libsemihost.a ]; then \
 	  rm -rf $(RTOBJ)/semihost && mkdir -p $(RTOBJ)/semihost && \
 	  (cd $(RTOBJ)/semihost && \
@@ -113,7 +113,7 @@ $(SYSROOT)/lib/libsim.a: $(RTOBJ)/exit-sim.o $(wildcard $(SYSROOT)/lib/libsemiho
 	  $(MIPSX_LLVM_BIN)/llvm-ar rcs $@ $(RTOBJ)/semihost/*.o; \
 	fi
 
-$(SYSROOT)/lib/libdevice.a: $(RTOBJ)/exit-device.o
+$(SYSROOT)/lib/libdevice.a: $(RTOBJ)/exit-device.o $(RTOBJ)/args-device.o
 	@mkdir -p $(dir $@)
 	rm -f $@ && $(MIPSX_LLVM_BIN)/llvm-ar rcs $@ $^
 

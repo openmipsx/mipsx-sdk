@@ -28,6 +28,9 @@
 #define IO_PUTCHAR_ERR 0x14u /* store, any width: low 8 bits to stderr */
 #define IO_INSTRET_LO 0x18u /* load word: instructions retired low (latches high) */
 #define IO_INSTRET_HI 0x1Cu /* load word: latched instructions retired high */
+#define IO_ARGC      0x20u /* load word: the program's argc */
+#define IO_ARGS_SIZE 0x24u /* load word: bytes for the argv block, 8-aligned */
+#define IO_ARGS_COPY 0x28u /* store word: write the argv block there */
 
 /* Code addresses are 30-bit word addresses; jump and branch targets wrap
  * modulo 2^30 words (spec §1, §6). */

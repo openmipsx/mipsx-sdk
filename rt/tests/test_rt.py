@@ -31,9 +31,11 @@ def read(path):
         return f.read()
 
 
-def link_program(out, main_src, exit_file="exit-sim.S", **kw):
-    """crt0 + an exit routine + MAIN_SRC (text), laid out like sim.ld."""
-    paths = [os.path.join(RT, "crt0.S"), os.path.join(RT, exit_file)]
+def link_program(out, main_src, board="sim", **kw):
+    """crt0 + the board's exit and argument routines + MAIN_SRC (text),
+    laid out like sim.ld."""
+    paths = [os.path.join(RT, f)
+             for f in ("crt0.S", "exit-%s.S" % board, "args-%s.S" % board)]
     texts = [read(p) for p in paths] + [main_src]
     return mxasm.link(texts, out, names=paths + ["main"], **kw)
 
@@ -77,6 +79,58 @@ class Crt0Test(unittest.TestCase):
         status, out, err = self.run_main(data_vma=0x180000, bss_fill=0x55)
         self.assertEqual((status, out, err), (42, "hello, crt0\n", ""))
 
+    def test_args(self):
+        # The simulator's command line reaches main: print argv[1..] and
+        # return argc.  argv[0] is the ELF's path as given.
+        src = """
+    .text
+main:
+    mov     r4,r6               ; argc, kept for the result
+    addi    r5,#4,r7            ; &argv[1]
+1:
+    ld      0[r7],r8
+    addi    r7,#4,r7
+    beq     r8,r0,3f            ; argv[argc] is null
+    nop
+    nop
+2:
+    ldbu    0[r8],r9
+    addi    r8,#1,r8
+    beq     r9,r0,4f
+    nop
+    nop
+    stb     -65536[r0],r9       ; putchar
+    b       2b
+    nop
+    nop
+4:
+    addi    r0,#10,r9
+    stb     -65536[r0],r9
+    b       1b
+    nop
+    nop
+3:
+    mov     r6,r2
+    ret
+    nop
+    nop
+"""
+        link_program(self.elf, src)
+        status, out, err = run_sim(self.elf)
+        self.assertEqual((status, out, err), (1, "", ""))
+        p = subprocess.run([SIM, self.elf, "hello", "", "wörld", "--stats"],
+                           capture_output=True, timeout=60)
+        self.assertEqual((p.returncode, p.stdout, p.stderr),
+                         (5, "hello\n\nwörld\n--stats\n".encode(), b""))
+        # mipsx-run splits --args at blanks, without globbing, and puts
+        # the words after the ELF (picolibc passes them after it).
+        p = subprocess.run(["sh", os.path.join(ROOT, "sim", "mipsx-run"),
+                            self.elf, "--args", " hello  * world "],
+                           capture_output=True, timeout=60,
+                           env=dict(os.environ, MIPSX_SIM=SIM))
+        self.assertEqual((p.returncode, p.stdout, p.stderr),
+                         (4, b"hello\n*\nworld\n", b""))
+
     def test_exit_status_truncated(self):
         # main's result goes to exit; the simulator keeps the low 8 bits.
         src = """
@@ -109,7 +163,7 @@ main:
 
     def test_device_exit_stops(self):
         # exit-device.S loops; the simulator's cycle limit stops it.
-        link_program(self.elf, MAIN, exit_file="exit-device.S")
+        link_program(self.elf, MAIN, board="device")
         status, out, err = run_sim(self.elf, "--max-cycles=100000")
         self.assertEqual((status, out), (124, "hello, crt0\n"))
 

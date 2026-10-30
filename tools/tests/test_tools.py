@@ -36,8 +36,10 @@ def read(path):
 
 
 def build_test_elf(path, **kw):
-    """crt0 + exit-sim + rt/tests/crt0_main.s (prints, exits with 42)."""
+    """crt0 + exit-sim + args-sim + rt/tests/crt0_main.s (prints, exits
+    with 42)."""
     paths = [os.path.join(RT, "crt0.S"), os.path.join(RT, "exit-sim.S"),
+             os.path.join(RT, "args-sim.S"),
              os.path.join(RT, "tests", "crt0_main.s")]
     asm = mxasm.link([read(p) for p in paths], path, names=paths, **kw)
     with open(path, "rb") as f:

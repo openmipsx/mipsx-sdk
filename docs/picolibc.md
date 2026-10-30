@@ -102,14 +102,13 @@ the compiler can (`ninja -k 0`), and runs the built tests with
 `meson/run-built-tests.py`: `meson test` with `sim/mipsx-run` as the exe
 wrapper, no cycle limit and 20 times picolibc's timeouts.
 
-Results on 2026-10-28, llvm-project `mipsx` at 3f189e4f0725 (S14's
-compiler-rt builtins and atomics in `libbuiltins.a`): all 277 tests
-build; 257 pass, 2 fail as expected (`test-hosted-exit-fail`,
-`test-abort-failure`), 17 are skipped and 1 fails:
-
-| Test | Result | Cause |
-|---|---|---|
-| `test-argv` | `mipsx-run` exits 126 on `--args hello world` | Not supported: no command-line arguments; crt0 calls `main(0, 0)` |
+Results on 2026-10-30, llvm-project `mipsx` at f14ba3d75e16, with
+crt0 passing the simulator's command line to `main` (abi §13.3): all 277
+tests build; 258 pass, 2 fail as expected (`test-hosted-exit-fail`,
+`test-abort-failure`) and 17 are skipped.  `test-argv` runs on MIPS-X as
+well as Hexagon in the openmipsx picolibc; picolibc passes its arguments
+to the exe wrapper as `--args hello world`, which `mipsx-run` turns into
+program arguments.
 
 The skipped tests need files, directories or `rlimit`s, or are for other
 targets (`test-riscv-jvt`, `test-scmpu`, …).

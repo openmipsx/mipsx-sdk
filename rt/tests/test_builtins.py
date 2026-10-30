@@ -381,7 +381,8 @@ class Result:
 
 def run_routine(name, rows, tmpdir):
     files, kinds, nres, _, _ = ROUTINES[name]
-    paths = [os.path.join(RT, "crt0.S"), os.path.join(RT, "exit-sim.S")] + \
+    paths = [os.path.join(RT, "crt0.S"), os.path.join(RT, "exit-sim.S"),
+             os.path.join(RT, "args-sim.S")] + \
         [os.path.join(BUILTINS, f) for f in files]
     texts = [read(p) for p in paths] + [program(name, rows)]
     elf = os.path.join(tmpdir, name + ".elf")
