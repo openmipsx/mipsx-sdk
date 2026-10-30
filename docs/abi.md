@@ -119,10 +119,12 @@ User code never writes `psw`. Only exception and interrupt handlers use
 the PC chain.
 
 The bit layout of the PSW (manual §2.4, Figure 2-3) is **not confirmed
-for the ES3890**: the processor spec does not describe it. The simulator
-uses the manual's layout; code that reads or writes PSW bits (handlers,
-crt0's overflow mask, §13.3) must be checked on hardware before relying
-on it.
+for the ES3890**, with one exception: the processor spec (§10, a
+hypothesis it calls strongly supported) says PSW bit 4 (0x10) masks
+interrupts, which is where the manual puts its M bit. The simulator uses
+the manual's layout; code that reads or writes the other PSW bits
+(handlers, crt0's overflow mask, §13.3) must be checked on hardware
+before relying on it.
 
 ### 2.4 DWARF register numbers
 
@@ -955,9 +957,10 @@ become calls to libatomic-style functions (`__atomic_load_4`,
 `__atomic_load` and so on). `rt/atomic.c` in `libbuiltins.a` implements
 them by setting the PSW M bit (the interrupt mask) around a plain access
 and restoring the PSW afterwards; every memory order is treated as `seq_cst`. The bit position
-comes from the manual and is unconfirmed for the ES3890 (§2.3), and in
-user state `movtos psw` does nothing, so there the functions are atomic
-only with respect to code that is not an interrupt handler. A fence emits
+(bit 4, 0x10) is the manual's, and the processor spec's §10 gives the
+same bit for the ES3890 (§2.3). In user state `movtos psw` does nothing,
+so there the functions are atomic only with respect to code that is not
+an interrupt handler. A fence emits
 no instruction: it is a compiler barrier, since memory accesses complete
 in order.
 
