@@ -1,4 +1,4 @@
 # Commits that release builds use (release.yml): the LLVM fork (branch
 # mipsx) and picolibc (branch mipsx).  Update these when either moves.
-LLVM_REF=9fd6a9945461f918eedcb233b7e51e4abba3bbd8
+LLVM_REF=f14ba3d75e16cb36368cf02d9522a347ceaf3821
 PICOLIBC_REF=7ff65dffbbb96c12f25cfd3da165722915ce2467
