@@ -152,11 +152,6 @@ int elf_load(const char *path, uint8_t *mem, uint32_t memsize,
     fail(path, msg);
     goto out;
   }
-  if (prog->flags & EF_MIPSX_VSHIFT) {
-    fail(path, "EF_MIPSX_VSHIFT is set, but the variable shift is not "
-               "supported (plan L2)");
-    goto out;
-  }
   if (prog->entry & 3) {
     fail(path, "entry point is not a multiple of 4");
     goto out;

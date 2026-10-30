@@ -85,6 +85,7 @@ enum op {
 #define F_TRAPLIKE 0x10u /* trap, hsc */
 #define F_ES3890  0x20u /* byte/halfword memory instruction */
 #define F_MD      0x40u /* mstart, mstep, dstep */
+#define F_VSHIFT  0x80u /* shav, shlv */
 #define F_MEM     (F_LOAD | F_STORE)
 #define F_CTL     (F_BRANCH | F_JUMP | F_TRAPLIKE)
 

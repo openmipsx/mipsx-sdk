@@ -160,6 +160,7 @@ struct cpu {
   uint8_t *mem;
   uint32_t memsize;
   int es3890;
+  int vshift;
 
   uint64_t cycles, instret, squashed, stalls, slots, slot_nops;
   uint64_t max_cycles;
@@ -567,6 +568,12 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   if ((in->flags & F_ES3890) && !c->es3890)
     sim_error(c, pcw, "%s is an ES3890 instruction, but the program's "
               "e_flags lack EF_MIPSX_ES3890", mx_opname(in->op));
+  /* Under the rotlcb variant Func 0x080 is the manual's rotate, which
+   * needs no flag. */
+  if ((in->flags & F_VSHIFT) && !c->vshift &&
+      !(in->op == OP_SHLV && (c->variant & V_ROTLCB)))
+    sim_error(c, pcw, "%s is an ES3890 variable shift, but the program's "
+              "e_flags lack EF_MIPSX_VSHIFT", mx_opname(in->op));
 
   /* Dynamic hazards. */
   if (c->load_reg && (in->reads & bitr((unsigned)c->load_reg))) {
@@ -1057,6 +1064,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   c->es3890 = (c->prog.flags & EF_MIPSX_ES3890) != 0;
+  c->vshift = (c->prog.flags & EF_MIPSX_VSHIFT) != 0;
   c->max_cycles = maxc;
   if (trace_file) {
     c->trace = fopen(trace_file, "w");

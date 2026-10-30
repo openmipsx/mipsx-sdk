@@ -39,6 +39,10 @@ import struct
 import sys
 
 EM_MIPS_X = 51
+# e_flags of the default CPU, as LLVM sets them (abi §11.2).
+EF_MIPSX_ES3890 = 1
+EF_MIPSX_VSHIFT = 2
+DEFAULT_FLAGS = EF_MIPSX_ES3890 | EF_MIPSX_VSHIFT
 IO_PUTCHAR = -0x10000
 IO_EXIT = -0x10000 + 4
 
@@ -528,7 +532,7 @@ class Assembler:
         return bytes(img)
 
 
-def write_elf_sections(path, sections, entry, symbols, flags=1,
+def write_elf_sections(path, sections, entry, symbols, flags=DEFAULT_FLAGS,
                        machine=EM_MIPS_X, data=2, etype=2):
     """Writes an ET_EXEC with one PT_LOAD per section.  SECTIONS is a list
     of (name, vaddr, paddr, contents, size); contents is None for a NOBITS
@@ -613,8 +617,8 @@ def write_elf_sections(path, sections, entry, symbols, flags=1,
         f.write(out)
 
 
-def write_elf(path, base, image, entry, symbols, flags=1, machine=EM_MIPS_X,
-              data=2, etype=2):
+def write_elf(path, base, image, entry, symbols, flags=DEFAULT_FLAGS,
+              machine=EM_MIPS_X, data=2, etype=2):
     """A minimal ET_EXEC: one PT_LOAD for .text at BASE."""
     write_elf_sections(path, [(".text", base, base, image, len(image))],
                        entry, symbols, flags, machine, data, etype)
@@ -692,7 +696,7 @@ def link_layout(sizes, text_base=0x2000, data_vma=None, ram_size=0x200000):
 
 
 def link(sources, out_path, text_base=0x2000, data_vma=None, bss_fill=None,
-         flags=1, names=None):
+         flags=DEFAULT_FLAGS, names=None):
     """Assembles SOURCES (a list of source texts) as one program laid out by
     link_layout, and writes the ELF.  BSS_FILL, a byte value, makes the
     ELF load that value over .sbss/.bss (as PROGBITS), so that tests can
@@ -740,7 +744,7 @@ def main(argv):
     p.add_argument("sources", nargs="+")
     p.add_argument("-o", "--output", required=True)
     p.add_argument("--base", type=lambda s: int(s, 0), default=0x2000)
-    p.add_argument("--flags", type=lambda s: int(s, 0), default=1)
+    p.add_argument("--flags", type=lambda s: int(s, 0), default=DEFAULT_FLAGS)
     p.add_argument("--link", action="store_true",
                    help="lay out sections like rt/sim.ld (implied by "
                    "several sources)")
