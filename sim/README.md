@@ -123,9 +123,12 @@ traps on overflow (abi §13.3).
 
 Where the spec marks a fact **Simulated** (vendor code run on this
 simulator, checked against an independent oracle), the simulator
-follows it: opcode 100 (`ldbu`) zero-extends, `bic` is ~Src1 & Src2,
-and SQ = 1 squashes the slots of a branch that is not taken. The
-signedness of opcodes 101, 001 and 111 is still a Hypothesis (spec §3).
+follows it: opcode 100 (`ldbu`) and 001 (`ldhu`) zero-extend, 111
+(`ldh`) sign-extends, `bic` is ~Src1 & Src2, and SQ = 1 squashes the
+slots of a branch that is not taken. Opcode 101 (`ldb`) sign-extends
+too; the spec marks that **Observed** with high confidence, from how
+vendor code treats the loaded value, but no simulated run has yet
+loaded a byte with bit 7 set through it (spec §3).
 
 **Code addresses.** Word addresses are 30 bits wide (spec §1): branch,
 `jspci`, `jpc` and `jpcrs` targets and the sequential PC are taken modulo
@@ -215,8 +218,8 @@ Semantic variants change what an instruction does:
 
 | Variant | Instead of the spec |
 |---|---|
-| `ldb-swap` | Opcode 100 (`ldbu`) sign-extends and 101 (`ldb`) zero-extends. Half settled: spec §3 says 100 zero-extends (Simulated); 101 is still a Hypothesis |
-| `ldh-swap` | The same for halfwords: 001 (`ldhu`) sign-extends, 111 (`ldh`) zero-extends |
+| `ldb-swap` | Opcode 100 (`ldbu`) sign-extends and 101 (`ldb`) zero-extends. Settled: spec §3 says 100 zero-extends (Simulated) and 101 sign-extends (Observed, high confidence; not yet Simulated) |
+| `ldh-swap` | The same for halfwords: 001 (`ldhu`) sign-extends, 111 (`ldh`) zero-extends. Settled: spec §3 confirms 001 zero-extends and 111 sign-extends (Simulated) |
 | `bic-swap` | `bic` is Src1 & ~Src2, as the manual's comment column says, not Src2 & ~Src1. Settled: spec §5 confirms ~Src1 & Src2 (Simulated) |
 | `shift32-zero` | `sh` and `asr` with n = 32 (shift field e = 0) shift by 0, as a 5-bit shifter would |
 | `squash-taken` | SQ = 1 squashes the delay slots when the branch is taken rather than when it is not. Settled: spec §4 confirms the spec reading (Simulated) |

@@ -93,9 +93,10 @@ static const struct variant {
 } variants[] = {
   {"ldb-swap", V_LDB_SWAP,
    "opcode 100 loads a signed byte and 101 an unsigned one (spec §3; "
-   "100 is settled as unsigned)"},
+   "settled: 100 unsigned, 101 signed)"},
   {"ldh-swap", V_LDH_SWAP,
-   "opcode 001 loads a signed halfword and 111 an unsigned one (spec §3)"},
+   "opcode 001 loads a signed halfword and 111 an unsigned one (spec §3; "
+   "settled the other way)"},
   {"bic-swap", V_BIC_SWAP, "bic is Src1 & ~Src2 (spec §5; settled the other way)"},
   {"shift32-zero", V_SHIFT32_ZERO,
    "sh and asr with n = 32 shift by 0 (a 5-bit shifter; spec §5)"},
