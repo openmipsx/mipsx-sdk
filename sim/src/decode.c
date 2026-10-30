@@ -19,7 +19,8 @@ static const char *const opnames[OP_COUNT] = {
   [OP_ADD] = "add", [OP_SUB] = "sub", [OP_SUBNC] = "subnc", [OP_AND] = "and",
   [OP_BIC] = "bic", [OP_NOT] = "not", [OP_OR] = "or", [OP_XOR] = "xor",
   [OP_MSTART] = "mstart", [OP_MSTEP] = "mstep", [OP_DSTEP] = "dstep",
-  [OP_ROTLB] = "rotlb", [OP_ROTLCB] = "rotlcb", [OP_SH] = "sh", [OP_ASR] = "asr",
+  [OP_ROTLB] = "rotlb", [OP_SHLV] = "shlv", [OP_SHAV] = "shav", [OP_SH] = "sh",
+  [OP_ASR] = "asr",
   [OP_ADDI] = "addi", [OP_ANDI] = "andi", [OP_JSPCI] = "jspci",
   [OP_MOVFRS] = "movfrs", [OP_MOVTOS] = "movtos", [OP_JPC] = "jpc",
   [OP_JPCRS] = "jpcrs", [OP_HSC] = "hsc", [OP_TRAP] = "trap",
@@ -136,7 +137,11 @@ void mx_decode(uint32_t w, struct insn *in) {
       if (func == 0x0C0) {
         in->op = OP_ROTLB;
       } else if (func == 0x080) {
-        in->op = OP_ROTLCB;
+        /* The manual's rotlcb; a shift by a signed count in later firmware
+         * (spec §5).  sim.c picks the reading. */
+        in->op = OP_SHLV;
+      } else if (func == 0x180) {
+        in->op = OP_SHAV;
       } else if ((func & 0xF80) == 0x200 || (func & 0xF80) == 0x100) {
         int n = shift_amount(func);
         if (!n) {

@@ -448,9 +448,10 @@ class Assembler:
             nargs(3)
             f = 0x099 if mnem == "mstep" else 0x166
             return 1 << 30 | 0 << 27 | reg(a[0]) << 22 | reg(a[1]) << 17 | reg(a[2]) << 12 | f
-        if mnem in ("rotlb", "rotlcb"):
+        if mnem in ("rotlb", "rotlcb", "shlv", "shav"):
+            # rotlcb and shlv are two readings of Func 0x080 (spec §5)
             nargs(3)
-            f = 0x0C0 if mnem == "rotlb" else 0x080
+            f = {"rotlb": 0x0C0, "rotlcb": 0x080, "shlv": 0x080, "shav": 0x180}[mnem]
             return 1 << 30 | 1 << 27 | reg(a[0]) << 22 | reg(a[1]) << 17 | reg(a[2]) << 12 | f
         if mnem == "sh":
             nargs(4)

@@ -118,8 +118,15 @@ encodings (branch conditions 000 and 100, unknown function codes, a
 shift field whose low four bits are not one-hot, bad special register
 numbers) stop the simulation. Every compute-immediate OP 001 word
 other than `hsc` (0xCFC00000) is `andi Src1,#imm,Dest`, Dest = Src1 &
-SignExtend(imm17) (spec §6, Observed). Arithmetic never traps on
-overflow (abi §13.3).
+SignExtend(imm17) (spec §6, Observed). Compute OP 001 Func 0x180 is
+`shav` and Func 0x080 `shlv` (spec §5, Observed in later firmware):
+Src1 shifted left by the signed count in Src2 if it is ≥ 0, else right
+by −Src2, with sign bits (`shav`) or zeros (`shlv`). The spec leaves
+counts outside −31…31 unknown, so they stop the simulation. `shlv` is
+the word the manual calls `rotlcb`; the spec finds the rotate reading
+does not fit the later firmware, so it is the `rotlcb` variant. Neither
+needs `EF_MIPSX_ES3890`. Arithmetic never traps on overflow (abi
+§13.3).
 
 Where the spec marks a fact **Simulated** (vendor code run on this
 simulator, checked against an independent oracle), the simulator
@@ -220,7 +227,16 @@ Semantic variants change what an instruction does:
 | `bic-swap` | `bic` is Src1 & ~Src2, as the manual's comment column says, not Src2 & ~Src1. Settled: spec §5 confirms ~Src1 & Src2 (Simulated) |
 | `shift32-zero` | `sh` and `asr` with n = 32 (shift field e = 0) shift by 0, as a 5-bit shifter would |
 | `squash-taken` | SQ = 1 squashes the delay slots when the branch is taken rather than when it is not. Settled: spec §4 confirms the spec reading (Simulated) |
+| `rotlcb` | Func 0x080 is the manual's `rotlcb`, Dest = Src1 rotated left by (~Src2 & 3) bytes, not `shlv`. Spec §5 has both readings; the logical shift is Observed in later firmware (medium confidence) and the rotate rests on the manual alone |
+| `andi-zext` | Compute-immediate OP 001 (`andi`) zero-extends imm17 rather than sign-extending it |
+| `op001-or` | Compute-immediate OP 001 is Dest = Src1 \| SignExtend(imm17) rather than & |
+| `op001-nop` | Compute-immediate OP 001 leaves Dest unchanged |
 | `dstep-borrow` | `dstep` subtracts when the 33-bit value (Src1 << 1 \| MSB(MD)) is at least Src2, rather than when the 32-bit difference has its MSB clear. The two agree whenever Src2 ≤ 2³¹ and the partial remainder is below Src2 |
+
+The last three are the competing readings of spec §6's `andi`
+(Observed, high confidence), kept as controls for rerunning vendor
+code; at most one of them may be given. `hsc` is the same under all
+three.
 
 Rule variants add a pipeline rule, reported as a hazard like those
 above (`--hazards` applies):
@@ -290,4 +306,6 @@ The assembler is only for these tests; real programs use the LLVM tools.
   the simulator never traps on overflow).
 - The system/user address split, and live PC chain contents outside
   exception handlers.
-- The ES3890 variable shift (plan L2), once its encoding is known.
+- `EF_MIPSX_VSHIFT` (abi §11.2, plan L2): the simulator runs `shav` and
+  `shlv` whatever the flag, but the flag stays reserved until the ABI
+  defines it.
