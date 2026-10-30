@@ -546,8 +546,7 @@ __attribute__((noinline)) static void step(struct cpu *c) {
   }
 
   if (in->op == OP_INVALID)
-    sim_error(c, pcw, "%s instruction 0x%08x: %s",
-              in->unknown ? "unknown" : "undefined", word, in->why);
+    sim_error(c, pcw, "undefined instruction 0x%08x: %s", word, in->why);
   if ((in->flags & F_ES3890) && !c->es3890)
     sim_error(c, pcw, "%s is an ES3890 instruction, but the program's "
               "e_flags lack EF_MIPSX_ES3890", mx_opname(in->op));
@@ -700,6 +699,7 @@ __attribute__((noinline)) static void step(struct cpu *c) {
                          : (uint32_t)((int32_t)a >> in->imm);
     break;
   case OP_ADDI: res = a + (uint32_t)in->imm; break;
+  case OP_ANDI: res = a & (uint32_t)in->imm; break;
   case OP_JSPCI:
     ctl = 1;
     redirect = 1;

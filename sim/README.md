@@ -43,7 +43,7 @@ stored to the exit register), or
 | Status | Meaning |
 |---|---|
 | 124 | Cycle limit reached |
-| 125 | Simulation error: pipeline hazard (in `error` mode), undefined or unknown instruction, access to unmapped memory, fetch outside RAM, `hsc` |
+| 125 | Simulation error: pipeline hazard (in `error` mode), undefined instruction, access to unmapped memory, fetch outside RAM, `hsc` |
 | 126 | The program could not be loaded, or bad options |
 
 Diagnostics go to stderr, prefixed `mipsx-sim: error:` or `warning:`,
@@ -116,10 +116,10 @@ address split of manual §2.5.
 **Instructions.** All of spec §3 to §6, decoded strictly: undefined
 encodings (branch conditions 000 and 100, unknown function codes, a
 shift field whose low four bits are not one-hot, bad special register
-numbers) stop the simulation. So do compute-immediate OP 001 encodings
-other than `hsc`, reported as an "unknown instruction": spec §6 says
-later firmware executes them, but not what they do. Arithmetic never
-traps on overflow (abi §13.3).
+numbers) stop the simulation. Every compute-immediate OP 001 word
+other than `hsc` (0xCFC00000) is `andi Src1,#imm,Dest`, Dest = Src1 &
+SignExtend(imm17) (spec §6, Observed). Arithmetic never traps on
+overflow (abi §13.3).
 
 Where the spec marks a fact **Simulated** (vendor code run on this
 simulator, checked against an independent oracle), the simulator
