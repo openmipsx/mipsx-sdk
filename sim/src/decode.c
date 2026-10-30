@@ -188,9 +188,15 @@ void mx_decode(uint32_t w, struct insn *in) {
         return;
       }
       if (op == 3) {
+        /* Dest is in the Src2 field, like addi; bits 16-12 are 0 (spec §2,
+         * §6). */
+        if (d) {
+          invalid(in, "movfrs with non-zero bits 16-12 (Dest is bits 21-17)");
+          return;
+        }
         in->op = OP_MOVFRS;
-        in->dest = d;
-        in->wreg = d ? (int)d : -1;
+        in->dest = s2;
+        in->wreg = s2 ? (int)s2 : -1;
       } else {
         in->op = OP_MOVTOS;
         in->reads = bit(s1);

@@ -46,9 +46,9 @@
 ; STDOUT: 000020a0: e00cffff  addi r0,#65535,r6
 ; STDOUT: 000020a4: c5fe0010  jspci r23,#16,r31
 ; STDOUT: 000020a8: c7c00000  ret
-; STDOUT: 000020ac: d8006001  movfrs psw,r6
-; STDOUT: 000020b0: d8006002  movfrs md,r6
-; STDOUT: 000020b4: d8006004  movfrs pcm4,r6
+; STDOUT: 000020ac: d80c0001  movfrs psw,r6
+; STDOUT: 000020b0: d80c0002  movfrs md,r6
+; STDOUT: 000020b4: d80c0004  movfrs pcm4,r6
 ; STDOUT: 000020b8: d1000001  movtos r4,psw
 ; STDOUT: 000020bc: d1000002  movtos r4,md
 ; STDOUT: 000020c0: d1000004  movtos r4,pcm1

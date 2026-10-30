@@ -485,7 +485,7 @@ class Assembler:
             return self.encode("jspci", "r0,#%%w(%s),%s" % (a[0], rd), pc)
         if mnem == "movfrs":
             nargs(2)
-            return 3 << 30 | 3 << 27 | reg(a[1]) << 12 | SPECIAL[a[0].lower()]
+            return 3 << 30 | 3 << 27 | reg(a[1]) << 17 | SPECIAL[a[0].lower()]
         if mnem == "movtos":
             nargs(2)
             return 3 << 30 | 2 << 27 | reg(a[0]) << 22 | SPECIAL[a[1].lower()]
