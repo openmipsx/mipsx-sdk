@@ -31,10 +31,14 @@ format spec §5 and §7.2).
 
 | Offset | Content |
 |---|---|
-| 0x000 | Global header (format spec §2): magic, MD5 of 0x000–0x1FF, 0x80, 0x80, file length, version (default `9.0.0`), section count 1 |
+| 0x000 | Global header (format spec §2): magic, MD5 of 0x000–0x0FF with 0x10–0x3F zeroed, header size 0x80, entry size 0x80, file length, version (default `9.0.0`), section count 1 |
 | 0x080 | Table entry for the section (§3): tag 0xCACAD3C3, type 2, data offset 0x80, MD5, length, version, byte sum at 0x7E |
-| 0x100–0x1FF | Two unused table entries, zero |
-| 0x200 | Copy of the table entry, then the section data |
+| 0x100 | Copy of the table entry, then the section data |
+
+The installers compute the first section's offset, and the extent of
+the global MD5, from the header as 0x50 + 0x54 × 0x7C (format spec §2,
+§6 step 4): 0x100 with one section, 0x200 with the stock three. The
+table holds only the counted entries; nothing is padded to three slots.
 
 Section data (format spec §4):
 
@@ -43,7 +47,7 @@ Section data (format spec §4):
 | 0x00 | Packed header: 0x00060803, directory offset, record count, stack (`__stack_top`, else 0x1FFFF0), length, length − 0x10, zero |
 | 0x20 | A zero word: the chunk list is empty |
 | 0x24 | Each PT_LOAD segment's file bytes, uncompressed, padded to words |
-| … | Load directory: one 0x01 record per segment (copy *word 3* words from header offset *word 1* to *word 2*; the form section C uses, §5), then 0x07 (`__mipsx_cb0` / 4), 0x05 (`__mipsx_cb1` / 4), and 0x03 last (entry word address, bit 30 set as in the stock images) |
+| … | Load directory: one 0x01 record per segment (copy *word 3* words from header offset *word 1* to *word 2*; the form section C uses, §5; word 4 = 1, the relocation nibble that makes word 1 header-relative, §4.4), then 0x07 (`__mipsx_cb0` / 4), 0x05 (`__mipsx_cb1` / 4), and 0x03 last (entry word address, bit 30 set as in the stock images); words 2–4 of those three are zero (§4.4 says to zero the "Varies" words) |
 | … | The loader stub (`loader-stub.s`, 304 bytes) |
 | length − 0x10 | Its entry: a branch back to the stub's start, two `nop` slots |
 | length − 4 | The section length (the stub uses it to find the header) |
@@ -72,43 +76,52 @@ length − 0x10, and must print and exit through crt0.
 Every check the format spec attributes to the boot selector or an
 installer, plus the structure it describes:
 
-- Header: size at least 0x200, magic, reserved fields zero, global MD5,
-  0x50/0x54 = 0x80, length = file size, version a NUL-padded string that
-  the installers accept (not major 0, 1.0.x or 2.0.x), count 1–3.
-- Each entry: field 0x00 zero, known type with its tag, data offset 0x80,
-  length ≤ 0xFFFFF, 0x24 zero, version string, bytes 0x7C–0x7D zero, the
-  byte sum at 0x7E and the boot selector's word-at-0x7C form of it, the
-  entry copy equal to the table, the data MD5; unused entries zero;
-  sections contiguous from 0x200 to the end of the file.
+- Header: size at least 0x100, magic, reserved fields zero, 0x50/0x54 =
+  0x80, length = file size, version a NUL-padded string that the
+  installers accept (not major 0, 1.0.x or 2.0.x), count 1–3, size at
+  least 0x50 + 0x54 × 0x7C, and the global MD5 over exactly that many
+  bytes with 0x10–0x3F zeroed (§2).
+- Each counted entry: field 0x00 zero, known type with its tag, data
+  offset 0x80, length ≤ 0xFFFFF, 0x24 zero, version string, bytes
+  0x7C–0x7D zero, the byte sum at 0x7E and the boot selector's
+  word-at-0x7C form of it, the entry copy equal to the table, the data
+  MD5; sections contiguous from 0x50 + 0x54 × 0x7C to the end of the
+  file. Nothing is read beyond the counted entries, as in the installers.
 - Packed sections: header magic, length fields, reserved zero, stack
   8-aligned in RAM, the word at length − 0x10 a branch into the section,
   the chunk list, the directory inside the section, 0x01 copies inside
-  the payload and RAM, 0x10 streams (raw deflate, CRC-32 and length
-  trailer), no overlapping loads, exactly one 0x03 record, last, pointing
-  into loaded data, and the 0x07 value = a loaded range's word address +
-  0x10000 (the §4.4 rule).
+  the payload and RAM, 0x10 streams (pre-words not redirecting the
+  stream elsewhere, raw deflate, CRC-32 and length trailer), 0x02
+  zero-fills (length in words) in RAM, no overlapping loads, the
+  register records (0x05–0x0C) known, word 4 = the relocation nibbles
+  §4.4 gives (1 for 0x01 and 0x10 records, 0 otherwise), the "Varies"
+  words zero, exactly one 0x03 record, last, pointing into loaded data,
+  and the 0x07 value = a loaded range's word address + 0x10000 (the
+  §4.4 rule).
 - Our rules: only type 2 sections (`--allow-types` to relax), and the
   type 2 sections, rounded to 64 KB, fit in the 0xB0000 bytes of flash
   between the stock recovery program and 0xF0000.
 
 The tests flip every byte of a packed image in turn and check that the
-verifier notices each one, and check the named error for 38
+verifier notices each one, and check the named error for 40
 specific corruptions (with checksums recomputed so that the check behind
-them is reached).
+them is reached), that a one-section image has its section at 0x100
+and its MD5 over 0x100 bytes, and that an image laid out with three
+table slots and the section at 0x200 is rejected.
 
 ## Decisions and risks (read before flashing)
 
 - **Version 9.0.0 by default**, above the stock 3.1.20, so that neither
   installer refuses it as a downgrade. The per-model floor and the
   provider's minimum (format spec §7.2) are not known.
-- **Unused table entries are zero, and the count is 1.** The format spec
-  only shows 3-section images (Q2: the meaning of 0x7C is a Hypothesis).
-  If an installer walks all three entries regardless of the count, a
-  zero entry looks like a type 0 section of length 0. Section B writes
-  only types 2 and above, so it is safe either way; the stock
-  application's installer writes type 0 sections. **Install the first
-  images through section B (the recovery protocol, format spec §7.1),
-  not from the stock application's web upgrade**, until this is known.
+- **One table entry, section at 0x100, MD5 over 0x100 bytes.** Earlier
+  versions of the packer padded the table to three slots and started
+  the section at 0x200 with a 0x200-byte MD5, which is what a stock
+  three-section image has. The format spec now records (§2, Q2) that
+  both installers compute the first section's offset and the MD5 extent
+  from the header fields, never read table entries beyond the count,
+  and refused an image laid out the old way as corrupt while accepting
+  the same section at 0x100. The verifier rejects the old layout.
 - **Stub assumptions to confirm on hardware:** that RAM at 0x1FF0 is free
   when the boot selector hands over, that freshly written RAM can be
   executed without cache maintenance, and that the boot selector enters
