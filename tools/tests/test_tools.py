@@ -59,13 +59,32 @@ def elf_segments(elf_bytes):
     return segs
 
 
+def sections_start(img):
+    """Where the first entry copy sits and how far the global MD5 reaches:
+    0x50 + 0x54 x 0x7C (format spec §2)."""
+    hsize, esize = struct.unpack_from(">II", img, 0x50)
+    count, = struct.unpack_from(">I", img, 0x7C)
+    return hsize + esize * count
+
+
+def refresh_global(img):
+    """The global MD5: over the first sections_start() bytes with
+    0x10-0x3F zeroed (format spec §2)."""
+    img = bytearray(img)
+    start = sections_start(img)
+    img[0x30:0x40] = bytes(16)
+    img[0x30:0x40] = hashlib.md5(img[:0x10] + bytes(0x30) +
+                                 img[0x40:start]).digest()
+    return bytes(img)
+
+
 def refresh(img):
     """Recomputes every checksum after a deliberate change, so that a test
     can reach the check behind them: section MD5, entry byte sum, entry
     copy and global MD5.  (A third implementation of the spec's rules.)"""
     img = bytearray(img)
     count, = struct.unpack_from(">I", img, 0x7C)
-    pos = 0x200
+    pos = sections_start(img)
     for i in range(min(count, 3)):
         e = 0x80 + 0x80 * i
         length, = struct.unpack_from(">I", img, e + 0x20)
@@ -74,12 +93,11 @@ def refresh(img):
         struct.pack_into(">H", img, e + 0x7E, sum(img[e:e + 0x7E]) & 0xFFFF)
         img[pos:pos + 0x80] = img[e:e + 0x80]
         pos += 0x80 + length
-    img[0x30:0x40] = bytes(16)
-    img[0x30:0x40] = hashlib.md5(img[:0x200]).digest()
-    return bytes(img)
+    return refresh_global(img)
 
 
-DATA = 0x280      # section data offset in a one-section image
+START = 0x100     # first entry copy in a one-section image (0x50 + 0x54)
+DATA = 0x180      # section data offset in a one-section image
 
 
 class Fixture(unittest.TestCase):
@@ -134,7 +152,6 @@ class PackTest(Fixture):
         self.assertEqual(img[:16], b"SpA3000 FiRmWaRe")
         self.assertEqual(struct.unpack_from(">I", img, 0x7C)[0], 1)
         self.assertEqual(img[0x88], 2)                      # type 2 only
-        self.assertEqual(img[0x100:0x200], bytes(0x100))    # unused entries
         self.assertEqual(img[0x28 + 0x80:0x28 + 0x80 + 11], b"9.1.2(test)")
         length, = struct.unpack_from(">I", img, 0xA0)
         self.assertEqual(len(img), DATA + length)
@@ -156,6 +173,42 @@ class PackTest(Fixture):
         self.assertEqual(recs[-3], (7, cb0 >> 2, 0, 0, 0))
         self.assertEqual(recs[-2], (5, cb1 >> 2, 0, 0, 0))
         self.assertEqual(recs[-1], (3, 0x40000000 | (0x2000 >> 2), 0, 0, 0))
+
+    def test_one_section_layout(self):
+        # Format spec §2 and §6 step 4: with one section the entry copy
+        # sits at 0x50 + 0x54 x 1 = 0x100, straight after the one table
+        # entry, and the global MD5 covers exactly those 0x100 bytes
+        # (0x10-0x3F zeroed).  No second or third table entry is written.
+        img = self.image
+        self.assertEqual(struct.unpack_from(">III", img, 0x50),
+                         (0x80, 0x80, len(img)))
+        self.assertEqual(struct.unpack_from(">I", img, 0x7C)[0], 1)
+        self.assertEqual(img[START:START + 0x80], img[0x80:0x100])
+        self.assertEqual(struct.unpack_from(">I", img, START + 0x20)[0],
+                         len(img) - DATA)
+        self.assertEqual(struct.unpack_from(">I", img, DATA)[0], 0x00060803)
+        md5 = hashlib.md5(img[:0x10] + bytes(0x30) + img[0x40:0x100])
+        self.assertEqual(img[0x30:0x40], md5.digest())
+        # The old layout's MD5 (0x200 bytes) is not what is stored.
+        old = hashlib.md5(img[:0x10] + bytes(0x30) + img[0x40:0x200])
+        self.assertNotEqual(img[0x30:0x40], old.digest())
+
+    def test_three_section_layout(self):
+        # With three sections the first entry copy is at 0x200 and the
+        # MD5 covers 0x200 bytes, as in the stock image (spec §1, §2).
+        secs = [(2, self.image[DATA:], "9.0.%d" % i) for i in range(3)]
+        img = pack.build_image(secs, "9.0.0")
+        self.assertEqual(struct.unpack_from(">I", img, 0x7C)[0], 3)
+        self.assertEqual(img[0x200:0x280], img[0x80:0x100])
+        self.assertEqual(img[0x200:0x280], img[0x80:0x100])
+        md5 = hashlib.md5(img[:0x10] + bytes(0x30) + img[0x40:0x200])
+        self.assertEqual(img[0x30:0x40], md5.digest())
+        r = self.assertPasses(img)
+        self.assertEqual(len(img), 0x200 + 3 * (0x80 + len(self.image) - DATA))
+        two = pack.build_image(secs[:2], "9.0.0")
+        self.assertEqual(two[0x180:0x200], two[0x80:0x100])
+        self.assertPasses(two)
+        self.assertEqual(r.entry, self.asm.labels["_start"])
 
     def test_cli(self):
         out = os.path.join(self.tmp.name, "cli.bin")
@@ -268,14 +321,34 @@ class CorruptImageTest(Fixture):
         self.assertEqual(refresh(self.image), self.image)
 
     def test_short(self):
-        self.assertFails(self.image[:0x1F0], "shorter than its header")
+        self.assertFails(self.image[:0xF0], "shorter than 0x100")
+        self.assertFails(self.word(0x7C, 2)[:0x170],
+                         "shorter than its header and table (0x180")
 
     def test_magic(self):
         self.assertFails(self.mutate(0, b"SpA1001"), "bad magic")
 
     def test_global_md5(self):
         self.assertFails(self.mutate(0x60, b"8", fix=False),
-                         "global header MD5 wrong")
+                         "global header MD5 wrong (over 0x100 bytes)")
+
+    def test_old_layout_rejected(self):
+        # An image laid out the way the packer did before format spec Q2
+        # was answered: three table slots, the section at 0x200 and the
+        # MD5 over 0x200 bytes.  The installers refuse it (spec §2); so
+        # must the verifier, both for its MD5 and for its entry copy.
+        img = bytearray(self.image[:0x100] + bytes(0x100) +
+                        self.image[0x100:])
+        struct.pack_into(">I", img, 0x58, len(img))
+        img[0x30:0x40] = bytes(16)
+        img[0x30:0x40] = hashlib.md5(img[:0x200]).digest()
+        r = verify.verify(bytes(img))
+        self.assertTrue(any("global header MD5 wrong" in e for e in r.errors),
+                        r.errors)
+        self.assertTrue(any("entry copy at 0x100 differs" in e
+                            for e in r.errors), r.errors)
+        # Relaid as the spec says, the same section passes.
+        self.assertPasses(self.image)
 
     def test_reserved_header(self):
         self.assertFails(self.mutate(0x20, b"\x01"), "0x10-0x2F not zero")
@@ -309,13 +382,13 @@ class CorruptImageTest(Fixture):
     def test_entry_sum(self):
         img = bytearray(self.mutate(0x80 + 0x30, b"\x01"))
         img[0x80 + 0x7F] ^= 1                    # spoil only the sum
-        img[0x200:0x280] = img[0x80:0x100]
+        img[START:START + 0x80] = img[0x80:0x100]
         self.assertFails(refresh_global(img), "byte sum at 0x7E")
 
     def test_entry_copy(self):
         img = bytearray(self.image)
-        img[0x200 + 0x40] ^= 0x20                # copy only, no refresh
-        self.assertFails(bytes(img), "entry copy")
+        img[START + 0x40] ^= 0x20                # copy only, no refresh
+        self.assertFails(bytes(img), "entry copy at 0x100")
 
     def test_tag(self):
         self.assertFails(self.word(0x84, pack.TAGS[1]), "tag")
@@ -344,8 +417,14 @@ class CorruptImageTest(Fixture):
     def test_section_length_past_eof(self):
         self.assertFails(self.word(0xA0, len(self.image)), "past the end")
 
-    def test_unused_entry(self):
-        self.assertFails(self.mutate(0x100, b"\x01"), "beyond the count")
+    def test_count_moves_sections(self):
+        # A count of 2 puts the first entry copy at 0x180 and the MD5
+        # over 0x180 bytes, so the one-section image no longer fits it:
+        # its MD5 is wrong, and with the checksums recomputed for that
+        # layout, the walk from 0x180 finds no second section.
+        self.assertFails(self.word(0x7C, 2, fix=False),
+                         "global header MD5 wrong (over 0x180 bytes)")
+        self.assertFails(self.word(0x7C, 2), "section 1 runs past the end")
 
     def test_packed_magic(self):
         self.assertFails(self.word(DATA, 0x00060804), "0x00060803")
@@ -406,24 +485,51 @@ class CorruptImageTest(Fixture):
         self.assertFails(self.word(d + 20 * (count - 3) + 4, 0x12345),
                          "r23 value")
 
+    def test_word_4_nibbles(self):
+        # Format spec §4.4: 0x01 records carry relocation nibbles 1 (word
+        # 1 header-relative); register and entry records carry 0.
+        d, count = self.directory()
+        self.assertFails(self.word(d + 16, 0), "word 4 is 0x0, not the")
+        self.assertFails(self.word(d + 16, 0x11), "word 4 is 0x11")
+        self.assertFails(self.word(d + 20 * (count - 1) + 16, 1),
+                         "word 4 is 0x1, not 0")
 
-def refresh_global(img):
-    img = bytearray(img)
-    img[0x30:0x40] = bytes(16)
-    img[0x30:0x40] = hashlib.md5(img[:0x200]).digest()
-    return bytes(img)
+    def test_varies_words_zero(self):
+        # Format spec §4.4: the "Varies" words are to be written as zero.
+        d, count = self.directory()
+        self.assertFails(self.word(d + 20 * (count - 1) + 8, 0x1234),
+                         "words 2-3 are not zero")
+        self.assertFails(self.word(d + 20 * (count - 2) + 12, 7),
+                         "words 2-3 are not zero")
+
+    def test_other_register_records(self):
+        # The loader's other register records (0x06 r25, 0x08-0x0C) and
+        # zero-fill (0x02, length in words) are known types (spec §4.4).
+        d, count = self.directory()
+        for t in (0x06, 0x08, 0x09, 0x0A, 0x0B, 0x0C):
+            self.assertPasses(self.word(d + 20 * (count - 2), t))
+        img = self.mutate(d + 20 * (count - 2),
+                          struct.pack(">5I", 0x02, 0x100000, 4, 0, 0))
+        self.assertPasses(img)
+        img = self.mutate(d + 20 * (count - 2),
+                          struct.pack(">5I", 0x02, 0x1FFFF0, 5, 0, 0))
+        self.assertFails(img, "zero-fill 0x1ffff0+0x14 not in RAM")
+        # A zero-fill that overlaps a loaded range.
+        img = self.mutate(d + 20 * (count - 2),
+                          struct.pack(">5I", 0x02, 0x2000, 1, 0, 0))
+        self.assertFails(img, "overlap")
 
 
 class StreamRecordTest(unittest.TestCase):
     """The verifier also checks deflate stream records (format spec §4.3),
     which mipsx-pack does not write.  Built from our own bytes."""
 
-    def section(self, payload, crc_delta=0):
+    def section(self, payload, crc_delta=0, pre=bytes(8)):
         raw = zlib.compressobj(9, zlib.DEFLATED, -15)
         stream = raw.compress(payload) + raw.flush()
-        rec = bytes(8) + stream + struct.pack("<II", (zlib.crc32(payload) +
-                                                      crc_delta) & 0xFFFFFFFF,
-                                              len(payload))
+        rec = pre + stream + struct.pack("<II", (zlib.crc32(payload) +
+                                                 crc_delta) & 0xFFFFFFFF,
+                                         len(payload))
         rec += bytes(-len(rec) % 4)
         body = bytes(4) + rec                         # empty chunk list
         dir_off = 0x20 + len(body)
@@ -448,6 +554,19 @@ class StreamRecordTest(unittest.TestCase):
         r = verify.verify(self.section(b"abcd" * 100, crc_delta=1))
         self.assertTrue(any("CRC-32" in e for e in r.errors), r.errors)
 
+    def test_pre_words(self):
+        # Spec §4.3: alt_flag set means the service writes to alt_dest.
+        # Accepted when alt_dest is the load address (as in the stock
+        # image), refused otherwise.
+        payload = b"xyz" * 50
+        same = struct.pack(">II", 1, 0x2000)
+        self.assertEqual(verify.verify(self.section(payload, pre=same))
+                         .errors, [])
+        other = struct.pack(">II", 1, 0x3000)
+        r = verify.verify(self.section(payload, pre=other))
+        self.assertTrue(any("redirect it to 0x3000" in e for e in r.errors),
+                        r.errors)
+
 
 @unittest.skipUnless(os.path.exists(SIM), "simulator not built")
 class RunPackedTest(Fixture):
@@ -457,7 +576,7 @@ class RunPackedTest(Fixture):
     find itself, copy the program to 0x2000 and start crt0."""
 
     def run_at(self, flash_offset):
-        sec = self.image[0x200:]
+        sec = self.image[START:]
         base = 0x400000 + flash_offset
         length, = struct.unpack_from(">I", sec, 0x20)
         path = os.path.join(self.tmp.name, "flash.elf")

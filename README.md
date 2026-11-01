@@ -17,6 +17,7 @@ Contents:
 | `docs/picolibc.md` | The C library: building picolibc into the sysroot and running its tests |
 | `docs/compiler-bugs/` | Reproducers for compiler bugs found while using the SDK |
 | `third_party-builds/` | lwIP, littlefs and BearSSL built for MIPS-X: configurations, self-tests on the simulator and a code size report |
+| `examples/blink/` | The first SPA3000 image: blinks the status LEDs, kicks the watchdog, and writes a dead-man boot record so that a hung unit still reaches the stock recovery program (its README has the flashing procedure and the spec facts it depends on) |
 | `release/` | Toolchain release archives (Clang, lld, LLVM tools, sysroot with picolibc, simulator, packer) and a container image; `.github/workflows/` builds and publishes them |
 
 `make` builds the simulator; `make check` runs the simulator, crt0 and
@@ -29,7 +30,9 @@ packer tests (needs a C compiler and python3).
 go through the I/O page of `docs/abi.md` §13.5, the exit status is the
 program's, and pipeline hazards (abi §9) stop it with status 125.
 `sim/mipsx-run` wraps it for lit (`--expect-exit=N`, `--print-exit`).
-See [`sim/README.md`](sim/README.md).
+`--board=spa3000` adds a model of the SPA3000's flash, system-control
+register file, timer, interrupt controller, watchdog and port 0 LEDs,
+written from the peripherals spec. See [`sim/README.md`](sim/README.md).
 
 ## Start-up code and image packer
 

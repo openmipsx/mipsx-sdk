@@ -152,6 +152,15 @@ def check_packed(r, data, name, ram_size):
         rec = struct.unpack_from(">5I", data, dir_off + 20 * i)
         rtype, w1, w2, w3, w4 = rec
         what = "%s: record %d (type 0x%02x)" % (name, i, rtype)
+        # Word 4 holds three relocation nibbles (§4.4): 1 in bits 0-3
+        # makes word 1 relative to the packed header, which is how the
+        # 0x01 and 0x10 records' offsets are read below; the other words
+        # and the register records are absolute, so their nibbles are 0.
+        if rtype in (0x01, 0x10):
+            r.check(w4 == 1, "%s: word 4 is 0x%x, not the relocation "
+                    "nibbles 1 (word 1 header-relative)" % (what, w4))
+        else:
+            r.check(w4 == 0, "%s: word 4 is 0x%x, not 0" % (what, w4))
         if rtype == 0x01:
             # Copy w3 words from header offset w1 to address w2 (§5, C).
             nbytes = 4 * w3
@@ -165,11 +174,17 @@ def check_packed(r, data, name, ram_size):
                 loads[w2] = data[w1:w1 + nbytes]
                 ranges.append((w2, w2 + nbytes))
         elif rtype == 0x10:
-            # Stream record (§4.3): pre[8], raw deflate, CRC-32 and length
-            # (little-endian).
+            # Stream record (§4.3): alt_flag, alt_dest, raw deflate,
+            # CRC-32 and length (little-endian).  The service writes to
+            # alt_dest when alt_flag is set; a generator writes two zero
+            # words.
             if r.check(payload_start <= w1 < dir_off,
                        "%s: stream offset 0x%x outside the payload"
                        % (what, w1)):
+                alt_flag, alt_dest = struct.unpack_from(">II", data, w1)
+                r.check(alt_flag == 0 or alt_dest == w2,
+                        "%s: stream pre-words redirect it to 0x%x, not the "
+                        "load address 0x%x" % (what, alt_dest, w2))
                 d = zlib.decompressobj(-15)
                 try:
                     out = d.decompress(data[w1 + 8:dir_off])
@@ -187,27 +202,39 @@ def check_packed(r, data, name, ram_size):
                     loads[w2] = out
                     ranges.append((w2, w2 + len(out)))
         elif rtype == 0x02:
-            pass      # zero-fill; its length unit is uncertain (§5, C)
-        elif rtype in (0x05, 0x06, 0x07):
-            pass      # register values, checked below
-        elif rtype == 0x03:
-            r.check(i == count - 1, "%s: entry record is not the last" % what)
-            entry = (w1 & 0x3FFFFFFF) * 4
+            # Zero-fill w2 words at w1 (§4.4); word 3 "Varies": zero.
+            r.check(w3 == 0, "%s: word 3 is not zero" % what)
+            r.check(w1 % 4 == 0 and w1 + 4 * w2 <= ram_size,
+                    "%s: zero-fill 0x%x+0x%x not in RAM" % (what, w1, 4 * w2))
+            if w2:
+                ranges.append((w1, w1 + 4 * w2))
+        elif rtype in (0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x03):
+            # Register values (r24, r25, r23, r4, r5, r22, r29, r19) and
+            # the entry; words 2 and 3 "Varies": zero (§4.4).
+            r.check(w2 == 0 and w3 == 0, "%s: words 2-3 are not zero" % what)
+            if rtype == 0x03:
+                r.check(i == count - 1, "%s: entry record is not the last"
+                        % what)
+                entry = (w1 & 0x3FFFFFFF) * 4
+        elif rtype == 0x04:
+            r.check(w2 == 0 and w3 == 0, "%s: words 2-3 are not zero" % what)
+            r.notes.append("%s: subroutine call, not checked" % what)
         else:
             r.check(False, "%s: unknown record type" % what)
+    loaded = [(a, a + len(d)) for a, d in loads.items()]
     ranges.sort()
     for (a0, a1), (b0, b1) in zip(ranges, ranges[1:]):
         r.check(a1 <= b0, "%s: loads 0x%x-0x%x and 0x%x-0x%x overlap"
                 % (name, a0, a1, b0, b1))
     if r.check(entry is not None, "%s: no entry record (type 0x03)" % name):
-        r.check(any(a <= entry < b for a, b in ranges),
+        r.check(any(a <= entry < b for a, b in loaded),
                 "%s: entry 0x%x is not in loaded data" % (name, entry))
     # r23 rule (§4.4, Verified for section A): the 0x07 value is a loaded
     # range's word address + 0x10000.
     for i in range(count):
         rtype, w1 = struct.unpack_from(">II", data, dir_off + 20 * i)
         if rtype == 0x07:
-            r.check(any(w1 == a // 4 + 0x10000 for a, _ in ranges),
+            r.check(any(w1 == a // 4 + 0x10000 for a, _ in loaded),
                     "%s: r23 value 0x%x is not a loaded range's word address "
                     "+ 0x10000" % (name, w1))
     return loads, entry
@@ -220,17 +247,16 @@ def verify(image, allow_types=(2,), ram_size=0x200000):
     r = Report()
     r.loads, r.entry = {}, None
     n = len(image)
-    # Section B's checks (§5, Installing, steps 2-5) and the header (§2).
-    if not r.check(n >= 0x200, "image shorter than its header and table "
-                   "(0x200 bytes)"):
+    # The installers' checks (§5, Installing, steps 2-6; §7.2) and the
+    # header (§2).  They refuse an image shorter than 0x100 bytes, or
+    # shorter than its header and table.
+    if not r.check(n >= 0x100, "image shorter than 0x100 bytes"):
         return r
     r.check(image[0:16] == MAGIC, "bad magic")
     r.check(image[0x10:0x30] == bytes(0x20), "header 0x10-0x2F not zero")
     r.check(image[0x40:0x50] == bytes(0x10), "header 0x40-0x4F not zero")
-    zeroed = image[:0x30] + bytes(16) + image[0x40:0x200]
-    r.check(hashlib.md5(zeroed).digest() == image[0x30:0x40],
-            "global header MD5 wrong")
-    r.check(u32(image, 0x50) == 0x80 and u32(image, 0x54) == 0x80,
+    hsize, esize = u32(image, 0x50), u32(image, 0x54)
+    r.check(hsize == 0x80 and esize == 0x80,
             "header fields 0x50/0x54 are not 0x80")
     r.check(u32(image, 0x58) == n, "header length 0x%x, file is 0x%x"
             % (u32(image, 0x58), n))
@@ -242,15 +268,23 @@ def verify(image, allow_types=(2,), ram_size=0x200000):
     count = u32(image, 0x7C)
     if not r.check(1 <= count <= 3, "section count %d not 1-3" % count):
         return r
-    # Table and sections (§1, §3).
-    pos, total_app = 0x200, 0
-    for i in range(3):
-        e = image[0x80 + 0x80 * i:0x100 + 0x80 * i]
+    # The installers take the first section's offset, and the extent of
+    # the global MD5, from the header: 0x50 + 0x54 × 0x7C (§2; 0x100 for
+    # one section, 0x200 for three).  Entries beyond the count are never
+    # read, so a shorter table is not padded.
+    start = hsize + esize * count
+    if not r.check(n >= start, "image shorter than its header and table "
+                   "(0x%x bytes)" % start):
+        return r
+    zeroed = image[:0x10] + bytes(0x30) + image[0x40:start]
+    r.check(hashlib.md5(zeroed).digest() == image[0x30:0x40],
+            "global header MD5 wrong (over 0x%x bytes)" % start)
+    # Table and sections (§1, §3): the entry copies are walked from
+    # START, each followed by its data.
+    pos, total_app = start, 0
+    for i in range(count):
+        e = image[hsize + esize * i:hsize + esize * (i + 1)]
         name = "section %d" % i
-        if i >= count:
-            r.check(e == bytes(0x80), "table entry %d beyond the count is "
-                    "not zero" % i)
-            continue
         stype, length = check_entry(r, e, name)
         r.check(stype in allow_types, "%s has type %d; allowed: %s"
                 % (name, stype, ", ".join(map(str, allow_types))))

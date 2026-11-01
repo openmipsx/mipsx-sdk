@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "board.h"
 #include "mipsx.h"
 
 #define SIM_VERSION "0.1"
@@ -25,6 +26,7 @@
 #define EXIT_CYCLE_LIMIT 124
 #define EXIT_SIM_ERROR 125
 #define EXIT_LOAD_ERROR 126
+#define EXIT_WATCHDOG 123 /* the board's watchdog reset the chip */
 
 enum hazmode { HAZ_ERROR, HAZ_WARN, HAZ_OFF };
 
@@ -101,9 +103,10 @@ static const struct variant {
 } variants[] = {
   {"ldb-swap", V_LDB_SWAP,
    "opcode 100 loads a signed byte and 101 an unsigned one (spec §3; "
-   "100 is settled as unsigned)"},
+   "settled: 100 unsigned, 101 signed)"},
   {"ldh-swap", V_LDH_SWAP,
-   "opcode 001 loads a signed halfword and 111 an unsigned one (spec §3)"},
+   "opcode 001 loads a signed halfword and 111 an unsigned one (spec §3; "
+   "settled the other way)"},
   {"bic-swap", V_BIC_SWAP, "bic is Src1 & ~Src2 (spec §5; settled the other way)"},
   {"shift32-zero", V_SHIFT32_ZERO,
    "sh and asr with n = 32 shift by 0 (a 5-bit shifter; spec §5)"},
@@ -187,6 +190,7 @@ struct cpu {
   uint32_t *stored;  /* one bit per RAM word stored to (V_ICACHE) */
   struct dcache dc[DCACHE_SIZE];
   FILE *trace;
+  struct board *board;  /* --board=spa3000, or NULL */
   struct program prog;
   int exited;
   int exit_code;
@@ -380,10 +384,22 @@ static uint32_t mem_load(struct cpu *c, uint32_t addr, const struct insn *in,
   addr = check_addr(c, addr, size, pcw, in);
   if (is_io(addr))
     return io_load(c, addr - IO_BASE, size, pcw);
-  if (addr >= c->memsize || c->memsize - addr < size)
-    sim_error(c, pcw, "load from unmapped address 0x%08x", addr);
+  uint8_t raw[4];
   const uint8_t *p = c->mem + addr;
   uint32_t v;
+  if (addr >= c->memsize || c->memsize - addr < size) {
+    enum bus_result r = BUS_UNMAPPED;
+    if (c->board)
+      r = board_read(c->board, addr, size, &v);
+    if (r == BUS_ERROR)
+      sim_error(c, pcw, "%s", c->board->err);
+    if (r == BUS_UNMAPPED)
+      sim_error(c, pcw, "load from unmapped address 0x%08x", addr);
+    /* The board returns the bytes big-endian in the low bits. */
+    for (unsigned i = 0; i < size; i++)
+      raw[i] = (uint8_t)(v >> (8 * (size - 1 - i)));
+    p = raw;
+  }
   enum op op = in->op;
   if (c->variant & V_LDB_SWAP)
     op = op == OP_LDB ? OP_LDBU : op == OP_LDBU ? OP_LDB : op;
@@ -411,8 +427,17 @@ static void mem_store(struct cpu *c, uint32_t addr, uint32_t v,
     io_store(c, addr - IO_BASE, size, v, pcw);
     return;
   }
-  if (addr >= c->memsize || c->memsize - addr < size)
-    sim_error(c, pcw, "store to unmapped address 0x%08x", addr);
+  if (addr >= c->memsize || c->memsize - addr < size) {
+    enum bus_result r = BUS_UNMAPPED;
+    uint32_t m = size == 4 ? 0xFFFFFFFFu : (1u << (size * 8)) - 1;
+    if (c->board)
+      r = board_write(c->board, addr, size, v & m);
+    if (r == BUS_ERROR)
+      sim_error(c, pcw, "%s", c->board->err);
+    if (r == BUS_UNMAPPED)
+      sim_error(c, pcw, "store to unmapped address 0x%08x", addr);
+    return;
+  }
   uint8_t *p = c->mem + addr;
   if (c->stored)
     c->stored[addr / 128] |= 1u << (addr / 4 % 32);
@@ -432,7 +457,7 @@ static void mem_store(struct cpu *c, uint32_t addr, uint32_t v,
 
 static int fetch(struct cpu *c, uint32_t pcw, uint32_t *word) {
   if (pcw >= c->memsize / 4)
-    return 0;
+    return c->board ? board_fetch(c->board, pcw * 4, word) : 0;
   const uint8_t *p = c->mem + pcw * 4;
   *word = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 |
           p[3];
@@ -467,6 +492,38 @@ static uint32_t chain_rotate(struct cpu *c) {
   return t;
 }
 
+/* ---- Interrupts --------------------------------------------------------- */
+
+/* Takes an interrupt (spec §10, Hypothesis, strongly supported): the PC
+ * chain is loaded with the three instructions that were in the pipeline
+ * and did not complete, which the handler restarts in order with jpcrs,
+ * jpc, jpc; execution continues at word address 0.  What the hardware
+ * does with the PSW on entry is not known (spec §10); the model does what
+ * trap does, so that jpcrs restores the PSW saved at entry as the spec
+ * says it must: PSWother <- PSWcurrent, then interrupts masked, overflow
+ * masked, I cleared (an interrupt, not a trap), system state, chain
+ * frozen.  How many cycles entry takes is not known either; the model
+ * charges one. */
+static void take_interrupt(struct cpu *c, uint32_t head, uint32_t p1,
+                           uint32_t p2) {
+  c->chain[0] = head;
+  c->chain[1] = p1;
+  c->chain[2] = p2;
+  c->psw = psw_save(c->psw);
+  c->psw = (c->psw & ~(PSW_S | PSW_U | PSW_O | PSW_I)) | PSW_M | PSW_V;
+  c->q[0] = 0; c->q[1] = 1; c->q[2] = 2;
+  c->sqd[0] = c->sqd[1] = c->sqd[2] = 0;
+  c->slot[0] = c->slot[1] = c->slot[2] = 0;
+  c->load_reg = c->load_reg2 = 0;
+  c->md_prev = c->md_prev2 = 0;
+  c->prev_store = 0;
+  c->cycles++;
+  if (c->trace)
+    fprintf(c->trace, "%10" PRIu64 " %08x: interrupt; chain %08x %08x %08x "
+            "psw = 0x%08x\n", c->cycles - 1, head * 4, head * 4, p1 * 4,
+            p2 * 4, c->psw);
+}
+
 /* ---- Execution ---------------------------------------------------------- */
 
 #define TRACE_EFFECT_LEN 96
@@ -489,6 +546,43 @@ __attribute__((noinline)) static void step(struct cpu *c) {
     fprintf(stderr, "mipsx-sim: error: cycle limit of %" PRIu64
             " reached at %s\n", c->max_cycles, loc);
     halt(c, EXIT_CYCLE_LIMIT);
+  }
+
+  /* The board: timer, watchdog and interrupt request. */
+  int irq_after_store = 0;
+  if (c->board) {
+    unsigned f = board_step(c->board, c->cycles);
+    if (f & BOARD_WATCHDOG) {
+      char loc[160];
+      fflush(stdout);
+      where(c, pcw, loc, sizeof loc);
+      fprintf(stderr, "mipsx-sim: error: watchdog reset at %s: no kick for "
+              "%.3f s (cycle %" PRIu64 ")\n", loc,
+              (double)(c->cycles - c->board->wdog.last_kick) /
+              (double)BOARD_HZ, c->cycles);
+      halt(c, EXIT_WATCHDOG);
+    }
+    /* An interrupt is taken when the mask is clear and no control
+     * transfer is in flight (slot[0] == 0 and nothing squashed), so that
+     * the three PCs in the queue are the sequential ones the handler
+     * restarts.  Spec §10: a store at the head of the chain has already
+     * been done when the interrupt is taken, so a store executes first
+     * and the interrupt is taken behind it with the store at the head. */
+    if ((f & BOARD_IRQ) && !(c->psw & PSW_M) && !slot && !squashed) {
+      uint32_t w = 0;
+      struct insn tmp;
+      int is_store = 0;
+      if (fetch(c, pcw, &w)) {
+        mx_decode(w, &tmp);
+        is_store = (tmp.flags & F_STORE) != 0;
+      }
+      if (is_store) {
+        irq_after_store = 1;
+      } else {
+        take_interrupt(c, pcw, c->q[1], c->q[2]);
+        return;
+      }
+    }
   }
 
   int have = fetch(c, pcw, &word);
@@ -863,6 +957,8 @@ __attribute__((noinline)) static void step(struct cpu *c) {
             eff[0] ? "; " : "", eff);
   if (c->exited)
     halt(c, c->exit_code & 0xFF);
+  if (irq_after_store)
+    take_interrupt(c, pcw, c->q[0], c->q[1]);
 }
 
 /* ---- Driver ------------------------------------------------------------- */
@@ -903,7 +999,8 @@ static void usage(FILE *f) {
     "program's exit status (low 8 bits of the value stored to the exit\n"
     "register), or 124 if the cycle limit was reached, 125 on a simulation\n"
     "error (pipeline hazard, bad memory access, undefined instruction),\n"
-    "126 if the program could not be loaded or the options are wrong.\n"
+    "126 if the program could not be loaded or the options are wrong,\n"
+    "123 if the board's watchdog reset the chip.\n"
     "\n"
     "options:\n"
     "  -t, --trace             trace every instruction to stderr\n"
@@ -922,6 +1019,14 @@ static void usage(FILE *f) {
     "  -d, --disassemble       print the program's code and exit\n"
     "      --variant=NAME,...  simulate an alternative reading of the spec;\n"
     "                          --variant=list lists them\n"
+    "      --board=NAME        model a board's peripherals (spa3000); the\n"
+    "                          default is RAM and the I/O page only\n"
+    "      --flash=FILE        flash contents for the board (up to 1 MB;\n"
+    "                          default erased, all 0xFF)\n"
+    "      --watchdog=SECONDS  the board's watchdog timeout (default 8;\n"
+    "                          0 = never bites); exit status 123 when it does\n"
+    "      --board-log=FILE    where the board logs port 0, watchdog and\n"
+    "                          flash events (default stderr; - = none)\n"
     "  -h, --help              show this help\n"
     "  -V, --version           show the version\n");
 }
@@ -970,6 +1075,9 @@ int main(int argc, char **argv) {
   int dis = 0;
   const char *trace_file = NULL;
   int trace = 0;
+  const char *board_name = NULL, *flash_path = NULL, *board_log = NULL;
+  double watchdog_s = 8.0;
+  static struct board board;
   static const struct option opts[] = {
     {"trace", no_argument, 0, 't'},
     {"trace-file", required_argument, 0, 'T'},
@@ -981,6 +1089,10 @@ int main(int argc, char **argv) {
     {"stats", no_argument, 0, 's'},
     {"disassemble", no_argument, 0, 'd'},
     {"variant", required_argument, 0, 'X'},
+    {"board", required_argument, 0, 'B'},
+    {"flash", required_argument, 0, 'F'},
+    {"watchdog", required_argument, 0, 'W'},
+    {"board-log", required_argument, 0, 'L'},
     {"help", no_argument, 0, 'h'},
     {"version", no_argument, 0, 'V'},
     {0, 0, 0, 0},
@@ -1037,6 +1149,28 @@ int main(int argc, char **argv) {
         return EXIT_LOAD_ERROR;
       }
       break;
+    case 'B':
+      if (!strcmp(optarg, "spa3000")) {
+        board_name = optarg;
+      } else if (!strcmp(optarg, "none")) {
+        board_name = NULL;
+      } else {
+        fprintf(stderr, "mipsx-sim: error: unknown board '%s' (spa3000 or "
+                        "none)\n", optarg);
+        return EXIT_LOAD_ERROR;
+      }
+      break;
+    case 'F': flash_path = optarg; break;
+    case 'W': {
+      char *end;
+      watchdog_s = strtod(optarg, &end);
+      if (!*optarg || *end || watchdog_s < 0) {
+        fprintf(stderr, "mipsx-sim: error: bad --watchdog value\n");
+        return EXIT_LOAD_ERROR;
+      }
+      break;
+    }
+    case 'L': board_log = optarg; break;
     case 'h': usage(stdout); return 0;
     case 'V': printf("mipsx-sim %s\n", SIM_VERSION); return 0;
     default: usage(stderr); return EXIT_LOAD_ERROR;
@@ -1066,6 +1200,25 @@ int main(int argc, char **argv) {
   c->es3890 = (c->prog.flags & EF_MIPSX_ES3890) != 0;
   c->vshift = (c->prog.flags & EF_MIPSX_VSHIFT) != 0;
   c->max_cycles = maxc;
+  if (board_name) {
+    FILE *log = stderr;
+    if (board_log && !strcmp(board_log, "-")) {
+      log = NULL;
+    } else if (board_log) {
+      log = fopen(board_log, "w");
+      if (!log) {
+        perror(board_log);
+        return EXIT_LOAD_ERROR;
+      }
+    }
+    if (board_init(&board, c->mem, c->memsize, flash_path, watchdog_s, log))
+      return EXIT_LOAD_ERROR;
+    c->board = &board;
+  } else if (flash_path || board_log) {
+    fprintf(stderr, "mipsx-sim: error: --flash and --board-log need "
+                    "--board\n");
+    return EXIT_LOAD_ERROR;
+  }
   if (trace_file) {
     c->trace = fopen(trace_file, "w");
     if (!c->trace) {
@@ -1098,6 +1251,10 @@ int main(int argc, char **argv) {
             ", delay slots %" PRIu64 " (nop %" PRIu64 ")%s\n",
             c->cycles, c->instret, c->squashed, c->stalls, c->slots,
             c->slot_nops, c->warnings ? ", hazards reported" : "");
+  if (stats && c->board)
+    board_stats(c->board, stderr);
+  if (c->board && c->board->log && c->board->log != stderr)
+    fclose(c->board->log);
   if (c->hz == HAZ_WARN && c->warnings) {
     fprintf(stderr, "mipsx-sim: %" PRIu64 " hazard warning(s)\n",
             c->warnings);

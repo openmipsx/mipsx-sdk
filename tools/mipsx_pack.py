@@ -25,8 +25,7 @@ IMAGE_MAGIC = b"SpA3000 FiRmWaRe"             # format spec §2
 TAGS = {0: 0xC6F4B6AF, 1: 0xB8B4D4AD, 2: 0xCACAD3C3}   # §3, field 0x04
 PACKED_MAGIC = 0x00060803                      # §4.1, field 0x00
 HEADER_SIZE = 0x80                             # global header and entries
-TABLE_ENTRIES = 3                              # §1: table at 0x080-0x1FF
-SECTIONS_START = 0x200
+MAX_SECTIONS = 3                               # §1: the stock table has 3 slots
 MAX_SECTION_LENGTH = 0xFFFFF                   # §3, field 0x20
 # Type 2 sections end at flash offset 0xF0000 (§5, flash layout).  Stock
 # section B sits at 0x20000 and fills its sector to 0x40000; the stock
@@ -39,6 +38,13 @@ DEFAULT_STACK = 0x001FFFF0                     # §4.1 field 0x0C, abi §13.2
 # Load directory record types (§4.4, §5 Section C).
 REC_COPY, REC_ENTRY, REC_CB1, REC_CB0 = 0x01, 0x03, 0x05, 0x07
 ENTRY_FLAG = 0x40000000                        # bit 30, as in stock images
+# Directory word 4 holds three relocation nibbles (§4.4): bits 0-3 for
+# word 1, 4-7 for word 2, 8-11 for word 3; 1 adds the packed header's
+# address.  A 0x01 record's source offset is header-relative, so it
+# carries 1; the register and entry records carry 0.  The "Varies" words
+# (2 and 3 of the register and entry records) are written as zero, as
+# §4.4 says.
+RELOC_WORD1 = 1
 
 # tools/loader-stub.s, assembled (base 0).  The last word is the section
 # length, filled in by pack_section().  tools/tests checks these against
@@ -167,7 +173,7 @@ def pack_section(elf):
     records = []
     for addr, data in segs:
         records.append((REC_COPY, 0x20 + len(body), addr,
-                        len(data) // 4, 1))
+                        len(data) // 4, RELOC_WORD1))
         body += data
     for sym, rtype in (("__mipsx_cb0", REC_CB0), ("__mipsx_cb1", REC_CB1)):
         if sym in elf.symbols:
@@ -209,23 +215,33 @@ def table_entry(stype, data, version):
 
 def build_image(sections, version):
     """SECTIONS is a list of (type, data, section version).  Returns the
-    upgrade image (format spec §1-§3, §6)."""
+    upgrade image (format spec §1-§3, §6).
+
+    The table holds exactly as many entries as there are sections, and
+    the first section's entry copy follows it at 0x50 + 0x54 × 0x7C
+    (0x100 for one section, 0x200 for three): the installers compute
+    that offset from the header fields, and the global MD5 covers
+    exactly that many bytes, with 0x10-0x3F zeroed (§2, §6 step 4).  No
+    table entries are written beyond the count: the installers never
+    read them (§2)."""
     check_version(version, "image version")
     enc = version.encode("ascii")
     if len(enc) > 31:
         raise PackError("image version longer than 31 characters")
-    if not 1 <= len(sections) <= TABLE_ENTRIES:
-        raise PackError("an image holds 1 to 3 sections")
+    if not 1 <= len(sections) <= MAX_SECTIONS:
+        raise PackError("an image holds 1 to %d sections" % MAX_SECTIONS)
     entries = [table_entry(t, d, v) for t, d, v in sections]
-    length = SECTIONS_START + sum(HEADER_SIZE + len(d) for _, d, _ in sections)
+    start = HEADER_SIZE + HEADER_SIZE * len(sections)
+    length = start + sum(HEADER_SIZE + len(d) for _, d, _ in sections)
     hdr = bytearray(HEADER_SIZE)
     hdr[0:16] = IMAGE_MAGIC
     struct.pack_into(">III", hdr, 0x50, HEADER_SIZE, HEADER_SIZE, length)
     hdr[0x5C:0x5C + len(enc)] = enc
     struct.pack_into(">I", hdr, 0x7C, len(sections))
     first = bytearray(hdr + b"".join(entries))
-    first += bytes(SECTIONS_START - len(first))       # unused table entries
-    first[0x30:0x40] = hashlib.md5(first).digest()    # field zero meanwhile
+    assert len(first) == start
+    first[0x10:0x40] = bytes(0x30)                    # zero while hashing
+    first[0x30:0x40] = hashlib.md5(first).digest()
     out = bytearray(first)
     for e, (_, d, _) in zip(entries, sections):
         out += e + d
