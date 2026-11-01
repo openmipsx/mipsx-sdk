@@ -127,6 +127,10 @@ restore:
     movtos r20,pcm1
     movtos r21,pcm1
     movtos r22,pcm1
+    ; The last store of every handler before jpcrs writes 0 to the
+    ; interrupt-suppress register (peripherals.md §4; processor §10), so
+    ; that a pending interrupt cannot split the return sequence.
+    st    0x4028[r27],r0
     jpcrs
     jpc
     jpc

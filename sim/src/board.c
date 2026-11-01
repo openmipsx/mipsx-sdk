@@ -191,7 +191,16 @@ unsigned board_step(struct board *b, uint64_t cycles) {
   timer_step(b);
   if (watchdog_step(b))
     flags |= BOARD_WATCHDOG;
-  if (board_pending_irq(b))
+  /* Interrupt suppress [spec: peripherals.md §4; Hypothesis, strong]: a
+   * store of S to 0x4028 holds interrupts off for the next 15 - S
+   * instructions.  board_step runs once per instruction issued, including
+   * a squashed delay slot (modelling choice: the spec counts instructions
+   * and says nothing about squashed slots), so this instruction is one of
+   * the held-off ones while the count is still above zero. */
+  int held = b->timer.suppress > 0;
+  if (held)
+    b->timer.suppress--;
+  if (board_pending_irq(b) && !held)
     flags |= BOARD_IRQ;
   return flags;
 }

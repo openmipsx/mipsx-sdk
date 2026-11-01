@@ -90,6 +90,7 @@ enum {
   V_ANDI_ZEXT = 1u << 11,
   V_OP001_OR = 1u << 12,
   V_OP001_NOP = 1u << 13,
+  V_IRQ_IN_SLOT = 1u << 14,
 };
 
 /* Competing readings of compute-immediate OP 001 (spec §6 andi): at most
@@ -125,6 +126,10 @@ static const struct variant {
    "compute-immediate OP 001 is Src1 | SignExtend(imm17), not & (spec §6)"},
   {"op001-nop", V_OP001_NOP,
    "compute-immediate OP 001 other than hsc leaves Dest unchanged (spec §6)"},
+  {"irq-in-slot", V_IRQ_IN_SLOT,
+   "an interrupt may be taken in a delay slot that executes, so the PC "
+   "chain need not hold consecutive PCs (spec §10 says never; the "
+   "interrupt-suppress register at 0x20004028 is modelled either way)"},
   {"load-delay-2", V_LOAD_DELAY_2,
    "rule: loads have two delay slots (P1 at distance 2; spec §9 says one)"},
   {"store-mem", V_STORE_MEM,
@@ -561,13 +566,20 @@ __attribute__((noinline)) static void step(struct cpu *c) {
               (double)BOARD_HZ, c->cycles);
       halt(c, EXIT_WATCHDOG);
     }
-    /* An interrupt is taken when the mask is clear and no control
-     * transfer is in flight (slot[0] == 0 and nothing squashed), so that
-     * the three PCs in the queue are the sequential ones the handler
-     * restarts.  Spec §10: a store at the head of the chain has already
-     * been done when the interrupt is taken, so a store executes first
-     * and the interrupt is taken behind it with the store at the head. */
-    if ((f & BOARD_IRQ) && !(c->psw & PSW_M) && !slot && !squashed) {
+    /* An interrupt is taken when the mask is clear, the board is not
+     * holding it off (the interrupt-suppress register, peripherals.md §4)
+     * and no control transfer is in flight (slot[0] == 0 and nothing
+     * squashed), so that the three PCs in the queue are the sequential
+     * ones the handler restarts (spec §10, "No interrupt in a delay
+     * slot").  --variant=irq-in-slot drops the slot condition: the chain
+     * then holds the queue as it is, slot, slot, target.  A squashed slot
+     * stays excluded under the variant too, since the chain has no squash
+     * state to restore (modelling choice).  Spec §10: a store at the head
+     * of the chain has already been done when the interrupt is taken, so
+     * a store executes first and the interrupt is taken behind it with
+     * the store at the head. */
+    if ((f & BOARD_IRQ) && !(c->psw & PSW_M) &&
+        (!slot || (c->variant & V_IRQ_IN_SLOT)) && !squashed) {
       uint32_t w = 0;
       struct insn tmp;
       int is_store = 0;

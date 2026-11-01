@@ -192,7 +192,14 @@ were in the pipeline and did not complete, and continues at word address
 three `movtos pcm1` and returns with `jpcrs`, `jpc`, `jpc`, which
 restarts the three in order. An interrupt is taken only between control
 transfers (not in a delay slot and not while slots are squashed), so the
-three PCs are always sequential. A store at the head of the chain has
+three PCs are always sequential; `--variant=irq-in-slot` lifts the
+delay-slot part of that (below). The board's interrupt-suppress register
+at 0x20004028 (peripherals.md §4, Hypothesis, strong) holds an interrupt
+off for the next 15 − S instructions after a store of S: the stock
+firmware writes 0 there before `jpcrs`, so a handler written for this
+model must too (`tests/board_isupp.s` counts the instructions;
+`tests/board_irq_return.s` and the two `tests/variant_irq_in_slot*.s`
+try the return sequence with and without the store). A store at the head of the chain has
 already been done when the interrupt is taken (spec §10): a store
 executes first and the interrupt is taken behind it with the store at the
 head, so a handler that restarts it as it is does the store twice; the
@@ -233,8 +240,15 @@ passes from 0xFFFFFFFF to 0, status bit 1 is set. Pending = 0x4038 &
 0x4034 & 0x3FFF; writing 0x4010 clears bit 1 and writing 0x4024 clears
 bit 13; a write to 0x4038 is ignored (not described). 0x402C and 0x4030
 are GPIO latches that read back as written; a low-then-high pulse on
-0x402C bit 2 kicks the watchdog. 0x4000, 0x4004, 0x4008, 0x4014 and
-0x4028 are latches with unknown roles. Accesses must be word wide (all
+0x402C bit 2 kicks the watchdog. 0x4028 is the interrupt-suppress
+register (§4, Hypothesis, strong): a store of S (bits 3–0; the rest are
+ignored) holds interrupts off for the next 15 − S instructions, 0 giving
+15, 0xE one and 0xF none; a later store replaces the count. Every
+instruction issued counts, including a squashed delay slot and
+instructions that run with the PSW mask set (modelling choices: the spec
+counts instructions and says no more); what a read gives is not
+described, so it reads back as written. 0x4000, 0x4004, 0x4008 and
+0x4014 are latches with unknown roles. Accesses must be word wide (all
 the spec describes). The firmware's tick, writing back count − 809,930,
 gives a period a few cycles longer than 809,930 here, since the count
 runs on between the read and the write; the spec's exact figure leaves
@@ -321,6 +335,7 @@ Semantic variants change what an instruction does:
 | `andi-zext` | Compute-immediate OP 001 (`andi`) zero-extends imm17 rather than sign-extending it |
 | `op001-or` | Compute-immediate OP 001 is Dest = Src1 \| SignExtend(imm17) rather than & |
 | `op001-nop` | Compute-immediate OP 001 leaves Dest unchanged |
+| `irq-in-slot` | An interrupt may be taken in a delay slot that executes (never in a squashed one: the chain has no squash state to restore), so the three PCs on the chain are the queue as it is: slot, slot, target. Spec §10 says never (Hypothesis, strong). Only `--board` programs can tell: `tests/variant_irq_in_slot.s` shows a handler without the suppress store having its own `jpcrs`, `jpc`, `jpc` return interrupted and re-entered with a `jpc` at the head of the chain, which it cannot restart; with the store (`tests/variant_irq_in_slot_isupp.s`), it runs as under the spec reading. So the delay-slot rule and the register protect the same window, as spec §10 says, and code that writes the register as the firmware does cannot tell them apart; code that leaves it out depends on the rule |
 | `dstep-borrow` | `dstep` subtracts when the 33-bit value (Src1 << 1 \| MSB(MD)) is at least Src2, rather than when the 32-bit difference has its MSB clear. The two agree whenever Src2 ≤ 2³¹ and the partial remainder is below Src2 |
 
 The last three are the competing readings of spec §6's `andi`

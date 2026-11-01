@@ -76,7 +76,8 @@ struct sysctl {
 #define TIMER_REG_ACK     0x4010u /* timer interrupt acknowledge, any write */
 #define TIMER_REG_4014    0x4014u /* written 0 at start-up; role unknown */
 #define TIMER_REG_ACK13   0x4024u /* acknowledge for interrupt bit 13 */
-#define TIMER_REG_4028    0x4028u /* 0, 6, 9 or 0xE before GPIO accesses; unknown */
+#define TIMER_REG_ISUPP   0x4028u /* interrupt suppress: 15 - S instructions (§4) */
+#define ISUPP_MAX         15u
 #define TIMER_REG_GPIO_WD 0x402Cu /* GPIO; bit 2 low-then-high = watchdog kick */
 #define TIMER_REG_GPIO_SI 0x4030u /* GPIO carrying the SLIC/DAA bus (§8) */
 #define TIMER_REG_IEN     0x4034u /* interrupt enable */
@@ -93,6 +94,9 @@ struct timer {
   uint64_t next_zero;     /* cycle at which the count next passes to 0 */
   uint32_t ien, istat;
   uint32_t gpio_wd, gpio_si;
+  /* Interrupt suppress [spec: peripherals.md §4, Hypothesis, strong]:
+   * instructions still to run before an interrupt may be taken. */
+  unsigned suppress;
 };
 
 /* ---- Watchdog [spec: peripherals.md §5] ---------------------------------- */
@@ -131,7 +135,7 @@ struct flash {
 enum bus_result { BUS_OK = 0, BUS_UNMAPPED = 1, BUS_ERROR = 2 };
 
 /* Flags returned by board_step. */
-#define BOARD_IRQ       0x1 /* an enabled interrupt is pending */
+#define BOARD_IRQ       0x1 /* an enabled interrupt is pending and not suppressed */
 #define BOARD_WATCHDOG  0x2 /* the watchdog has bitten */
 
 struct board {
@@ -155,7 +159,8 @@ enum bus_result board_write(struct board *b, uint32_t addr, unsigned size,
                             uint32_t v);
 /* Instruction fetch from outside RAM (DRAM aliases and flash). */
 int board_fetch(struct board *b, uint32_t addr, uint32_t *word);
-/* Advance to the given cycle; returns BOARD_* flags. */
+/* Advance to the given cycle, at the issue of one instruction (or squashed
+ * slot); returns BOARD_* flags. */
 unsigned board_step(struct board *b, uint64_t cycles);
 void board_logf(struct board *b, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));

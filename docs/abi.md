@@ -939,6 +939,14 @@ lowest or highest 64 KB. They never need to save r23, r24 or r28. The
 manual's rule that no register may be accessed in the first two
 instructions of a handler (Appendix I, item 3) applies.
 
+On the SPA3000 the last store of a handler, before `jpcrs`, writes 0 to
+the interrupt-suppress register at 0x20004028 (peripherals spec §4;
+processor spec §10, both Hypothesis, strong), which holds interrupts off
+for the next 15 instructions: long enough for `jpcrs`, `jpc`, `jpc` and
+the three restarted instructions. The stock firmware does this in every
+handler, and the same store precedes its PSW read-modify-write. The
+simulator's `--board=spa3000` models the register.
+
 ### 13.5 Simulator I/O page
 
 A simulator-only page at 0xFFFF0000–0xFFFF00FF, reachable from r0 in one

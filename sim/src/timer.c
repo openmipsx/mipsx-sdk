@@ -81,8 +81,13 @@ enum bus_result timer_read(struct board *b, uint32_t off, unsigned size,
   case TIMER_REG_ACK:
   case TIMER_REG_ACK13:
     return timer_error(b, "load from write-only acknowledge", off);
+  case TIMER_REG_ISUPP:
+    /* What a read gives is not described [spec: §4]; the last value
+     * written is a modelling choice. */
+    *v = t->latch[(off - TIMER_BLOCK_OFF) / 4];
+    return BUS_OK;
   case TIMER_REG_CTL: case TIMER_REG_CFG: case TIMER_REG_4008:
-  case TIMER_REG_4014: case TIMER_REG_4028:
+  case TIMER_REG_4014:
     /* Latches with unknown roles [spec: §2]: read back as written. */
     *v = t->latch[(off - TIMER_BLOCK_OFF) / 4];
     return BUS_OK;
@@ -132,8 +137,17 @@ enum bus_result timer_write(struct board *b, uint32_t off, unsigned size,
   case TIMER_REG_GPIO_SI:
     t->gpio_si = v; /* [spec: §2 0x4030]; bus traffic not modelled yet */
     return BUS_OK;
+  case TIMER_REG_ISUPP:
+    /* Interrupt suppress [spec: §2 0x4028 row, §4 "Interrupt suppress";
+     * Hypothesis, strong]: writing S (bits 3-0) holds off interrupts for
+     * the next 15 - S instructions: 0 gives 15, 0xE gives 1, 0xF none.
+     * The upper bits are not described and are ignored.  The count runs
+     * in board_step. */
+    t->latch[(off - TIMER_BLOCK_OFF) / 4] = v;
+    t->suppress = ISUPP_MAX - (v & 0xF);
+    return BUS_OK;
   case TIMER_REG_CTL: case TIMER_REG_CFG: case TIMER_REG_4008:
-  case TIMER_REG_4014: case TIMER_REG_4028:
+  case TIMER_REG_4014:
     t->latch[(off - TIMER_BLOCK_OFF) / 4] = v; /* [spec: §2, roles unknown] */
     return BUS_OK;
   default:
