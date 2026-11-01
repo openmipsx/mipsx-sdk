@@ -71,6 +71,7 @@ ET_EXEC = 2
 PT_LOAD = 1
 SHT_SYMTAB = 2
 EF_MIPSX_ES3890 = 1
+EF_MIPSX_VSHIFT = 2
 
 
 class PackError(Exception):
@@ -94,7 +95,7 @@ class Elf:
             raise PackError("e_machine is %d, not EM_MIPS_X (51)" % machine)
         if etype != ET_EXEC:
             raise PackError("not an executable (ET_EXEC); link it first")
-        if self.flags & ~EF_MIPSX_ES3890:
+        if self.flags & ~(EF_MIPSX_ES3890 | EF_MIPSX_VSHIFT):
             raise PackError("unsupported e_flags 0x%x (abi §11.2)" % self.flags)
         self.segments = []      # (load address, bytes, memsz)
         for i in range(phnum):

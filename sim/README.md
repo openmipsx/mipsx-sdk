@@ -104,10 +104,11 @@ test even when piped into FileCheck; use `--print-exit` or
 
 **ELF.** ELF32, big-endian (`ELFDATA2MSB`), `EM_MIPS_X` (51), `ET_EXEC`.
 `PT_LOAD` segments are loaded at their physical (load) address, as the
-device's loader would; `.data` copying is crt0's job. `e_flags` may be
-0 or `EF_MIPSX_ES3890`; without that flag the six byte and halfword
-memory instructions are errors. `EF_MIPSX_VSHIFT` and reserved bits are
-rejected. Execution starts at `e_entry`.
+device's loader would; `.data` copying is crt0's job. `e_flags` may
+hold `EF_MIPSX_ES3890` and `EF_MIPSX_VSHIFT`; without the first the six
+byte and halfword memory instructions are errors, and without the
+second `shav` and `shlv` are (abi §11.2). Reserved bits are rejected.
+Execution starts at `e_entry`.
 
 **Reset state.** All registers 0 except sp (r29) = top of RAM − 16, so
 that small tests can run without crt0 (crt0 sets sp itself). PSW = S, I,
@@ -130,8 +131,9 @@ Src1 shifted left by the signed count in Src2 if it is ≥ 0, else right
 by −Src2, with sign bits (`shav`) or zeros (`shlv`). The spec leaves
 counts outside −31…31 unknown, so they stop the simulation. `shlv` is
 the word the manual calls `rotlcb`; the spec finds the rotate reading
-does not fit the later firmware, so it is the `rotlcb` variant. Neither
-needs `EF_MIPSX_ES3890`. Arithmetic never traps on overflow (abi
+does not fit the later firmware, so it is the `rotlcb` variant. Both
+need `EF_MIPSX_VSHIFT`, except Func 0x080 under the `rotlcb` variant,
+which is then the manual's instruction. Arithmetic never traps on overflow (abi
 §13.3).
 
 Where the spec marks a fact **Simulated** (vendor code run on this
@@ -416,6 +418,3 @@ The assembler is only for these tests; real programs use the LLVM tools.
   erase timing (peripherals.md §8, flash.md §1).
 - The system/user address split, and live PC chain contents outside
   exception handlers.
-- `EF_MIPSX_VSHIFT` (abi §11.2, plan L2): the simulator runs `shav` and
-  `shlv` whatever the flag, but the flag stays reserved until the ABI
-  defines it.

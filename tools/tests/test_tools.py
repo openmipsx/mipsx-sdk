@@ -263,7 +263,7 @@ class PackErrorTest(Fixture):
 
     def test_reserved_flags(self):
         with self.assertRaisesRegex(pack.PackError, "e_flags"):
-            pack.pack_elf(self.elf_with(flags=2))
+            pack.pack_elf(self.elf_with(flags=4))
 
     def test_entry_outside(self):
         with self.assertRaisesRegex(pack.PackError, "entry point"):

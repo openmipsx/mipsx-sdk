@@ -703,7 +703,14 @@ All instructions in spec §3–§6:
 - Branches: `beq bne blt bge blo bhs` and the squashing forms with
   suffix `sq` (`beqsq` …).
 - Compute: `add sub subnc and bic not or xor mstart mstep dstep rotlb
-  rotlcb sh asr`.
+  sh asr`.
+- Shifts by a register amount (feature `vshift`): `shlv` (Func 0x080)
+  and `shav` (Func 0x180), `Src1,Src2,Dest`, shifting Src1 by the signed
+  count in Src2 (spec §5). The manual calls Func 0x080 `rotlcb`, a byte
+  rotate; the assembler does not accept that name, because it would
+  assemble a shift where the source asked for a rotate. With
+  `-mcpu=mipsx` neither instruction exists and both encodings
+  disassemble as `.word`.
 - Compute immediate: `addi jspci movfrs movtos jpc jpcrs hsc trap`.
   `trap #v` takes a vector 0–255.
 
@@ -791,12 +798,13 @@ generic ELF ones. Symbol values are byte addresses (§4).
 | Flag | Value | Meaning |
 |---|---|---|
 | `EF_MIPSX_ES3890` | 0x00000001 | Uses the ES3890 byte and halfword loads and stores (spec §3) |
-| `EF_MIPSX_VSHIFT` | 0x00000002 | Reserved for the ES3890 variable shift (plan L2), once its encoding is known |
+| `EF_MIPSX_VSHIFT` | 0x00000002 | Uses the ES3890 shifts by a register amount, `shav` and `shlv` (spec §5) |
 | (others) | | Reserved, must be 0 |
 
 The assembler sets `EF_MIPSX_ES3890` when the subtarget has the `es3890`
-feature (the default CPU, `-mcpu=es3890`), whether or not the object uses
-those instructions; it is clear for `-mcpu=mipsx`. The linker ORs the
+feature and `EF_MIPSX_VSHIFT` when it has the `vshift` feature (both are
+in the default CPU, `-mcpu=es3890`), whether or not the object uses
+those instructions; both are clear for `-mcpu=mipsx` (D18). The linker ORs the
 flags of its inputs into the output, and rejects an input with a
 reserved bit set. The simulator runs only programs whose flags it
 supports.
@@ -1164,12 +1172,25 @@ filling opportunities in S11. Rejected: tracking pending loads across
 edges (needs whole-function analysis, and calls and returns cross
 compilation units).
 
+**D18. The variable shifts have their own feature and flag (§10.3,
+§11.2).** `shav` and `shlv` rest on later firmware (spec §5, medium
+confidence), and Func 0x080 is a different instruction, `rotlcb`, in the
+manual. A separate bit lets a loader or the simulator refuse a program that
+relies on the shifts without refusing one that only needs the byte ops,
+and costs nothing. The flag follows the CPU, like `EF_MIPSX_ES3890`, so
+the assembler needs no record of which instructions an object uses.
+Rejected: folding the shifts into `es3890` and `EF_MIPSX_ES3890` (ties
+two separate spec findings together, so doubt about one would cover
+both); setting the flag only in objects
+that use the shifts (a new mechanism, and inline assembly would make it
+depend on the source).
+
 ## 15. Questions each work package may ask
 
 | Package | Question | Answer |
 |---|---|---|
 | S2 | Register classes? | GPR = r0–r31 (with r0 constant); specials psw, md, pcm4/pcm1 (§2) |
-| S2 | Subtarget features and CPUs? | Feature `es3890` (byte/halfword memory ops); feature `long-calls`; CPUs `es3890` (default, has `es3890`) and `mipsx` (§10.3, §5.4) |
+| S2 | Subtarget features and CPUs? | Feature `es3890` (byte/halfword memory ops); feature `vshift` (`shav`, `shlv`); feature `long-calls`; CPUs `es3890` (default, has `es3890` and `vshift`) and `mipsx` (§10.3, §5.4) |
 | S2 | Printer conventions? | `rN` names, manual operand order, aliases of §10.5 |
 | S2 | Comment and separator strings? | `;` and `%%` (§10.1) |
 | S3 | Immediate ranges? | imm17 −65536…65535; disp16 in words; `sh`/`asr` n 1–32; `lsl` 0–31; `lsr` 1–32; `trap` 0–255 |

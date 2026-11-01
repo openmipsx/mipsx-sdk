@@ -140,8 +140,10 @@ void mx_decode(uint32_t w, struct insn *in) {
         /* The manual's rotlcb; a shift by a signed count in later firmware
          * (spec §5).  sim.c picks the reading. */
         in->op = OP_SHLV;
+        in->flags |= F_VSHIFT;
       } else if (func == 0x180) {
         in->op = OP_SHAV;
+        in->flags |= F_VSHIFT;
       } else if ((func & 0xF80) == 0x200 || (func & 0xF80) == 0x100) {
         int n = shift_amount(func);
         if (!n) {
