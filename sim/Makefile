@@ -8,14 +8,15 @@ PYTHON ?= python3
 PREFIX ?= /usr/local
 BUILD ?= build
 
-SRCS = src/sim.c src/decode.c src/elf.c
-HDRS = src/mipsx.h
+SRCS = src/sim.c src/decode.c src/elf.c src/board.c src/sysctl.c src/timer.c \
+	src/watchdog.c src/flash.c
+HDRS = src/mipsx.h src/board.h
 
 all: $(BUILD)/mipsx-sim
 
 $(BUILD)/mipsx-sim: $(SRCS) $(HDRS)
 	@mkdir -p $(BUILD)
-	$(CC) $(WARN) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS)
+	$(CC) $(WARN) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS) -lm
 
 check: $(BUILD)/mipsx-sim
 	$(PYTHON) tests/run_tests.py --sim $(BUILD)/mipsx-sim --runner ./mipsx-run --work $(BUILD)/tests

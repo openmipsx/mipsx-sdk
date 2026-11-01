@@ -29,7 +29,9 @@ packer tests (needs a C compiler and python3).
 go through the I/O page of `docs/abi.md` §13.5, the exit status is the
 program's, and pipeline hazards (abi §9) stop it with status 125.
 `sim/mipsx-run` wraps it for lit (`--expect-exit=N`, `--print-exit`).
-See [`sim/README.md`](sim/README.md).
+`--board=spa3000` adds a model of the SPA3000's flash, system-control
+register file, timer, interrupt controller, watchdog and port 0 LEDs,
+written from the peripherals spec. See [`sim/README.md`](sim/README.md).
 
 ## Start-up code and image packer
 

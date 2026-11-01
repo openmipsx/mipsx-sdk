@@ -16,10 +16,14 @@
 #   ; STDERR-EMPTY               stderr must be empty
 #   ; STDIN: text                stdin contents (escapes allowed)
 #   ; BASE: 0x0                  load address of the image (default 0x2000)
+#   ; LOG-PERIOD: text N TOL     the board log lines on stderr containing
+#                                text ("mipsx-sim: board: cycle C ...") must
+#                                be at least three, N cycles apart within TOL
 #   ; ELF: flags=0 machine=8 data=1 etype=1   ELF header overrides
 import argparse
 import glob
 import os
+import re
 import subprocess
 import sys
 
@@ -30,7 +34,7 @@ import mxasm  # noqa: E402
 def directives(text):
     d = {"ARGS": [], "RUNNER": None, "EXIT": 0, "STDOUT": None, "STDERR": [],
          "NOT-STDERR": [], "STDERR-EMPTY": False, "STDIN": "", "BASE": 0x2000,
-         "ELF": {}}
+         "ELF": {}, "LOG-PERIOD": []}
     for line in text.splitlines():
         s = line.strip()
         if not s.startswith(";"):
@@ -57,6 +61,10 @@ def directives(text):
             d["STDIN"] += val.encode().decode("unicode_escape")
         elif key == "BASE":
             d["BASE"] = int(val, 0)
+        elif key == "LOG-PERIOD":
+            words = val.split()
+            d["LOG-PERIOD"].append((" ".join(words[:-2]), int(words[-2], 0),
+                                    int(words[-1], 0)))
         elif key == "ELF":
             for kv in val.split():
                 k, _, v = kv.partition("=")
@@ -100,6 +108,17 @@ def run_one(path, args):
             problems.append("stderr contains %r" % s)
     if d["STDERR-EMPTY"] and err:
         problems.append("stderr not empty")
+    for text, period, tol in d["LOG-PERIOD"]:
+        cycles = [int(m.group(1)) for m in
+                  re.finditer(r"^mipsx-sim: board: cycle (\d+) .*%s" %
+                              re.escape(text), err, re.M)]
+        if len(cycles) < 3:
+            problems.append("only %d board log lines match %r" % (len(cycles), text))
+        gaps = [b - a for a, b in zip(cycles, cycles[1:])]
+        bad = [g for g in gaps if abs(g - period) > tol]
+        if bad:
+            problems.append("%r gaps %s are not %d +/- %d cycles" %
+                            (text, bad, period, tol))
     if problems:
         return "; ".join(problems) + "\n  command: %s\n  stderr: %s" % (
             " ".join(cmd), err.strip().replace("\n", "\n          "))

@@ -36,12 +36,17 @@ them to `main` through the I/O page (abi §13.3, §13.5).
 | `-s`, `--stats` | At exit, print cycles, instructions, squashed slots, store stalls and delay-slot use (how many slots hold `nop`; for S11) |
 | `-d`, `--disassemble` | Print the disassembly of the executable segments and exit |
 | `--variant=NAME,...` | Simulate an alternative reading of the spec (see "Variants"); repeatable. `--variant=list` lists them |
+| `--board=NAME` | Model a board's peripherals outside RAM and the I/O page: `spa3000` (see "Board model") or `none` (the default) |
+| `--flash=FILE` | The board's flash contents, up to 1 MB; erased (all 0xFF) without it |
+| `--watchdog=SECONDS` | The board's watchdog timeout (default 8; 0 = never bites) |
+| `--board-log=FILE` | Where the board logs port 0, watchdog and flash events (default stderr; `-` turns the log off) |
 
 Exit status: the program's exit status (the low 8 bits of the word
 stored to the exit register), or
 
 | Status | Meaning |
 |---|---|
+| 123 | The board's watchdog reset the chip (`--board`) |
 | 124 | Cycle limit reached |
 | 125 | Simulation error: pipeline hazard (in `error` mode), undefined instruction, access to unmapped memory, fetch outside RAM, `hsc` |
 | 126 | The program could not be loaded, or bad options |
@@ -110,8 +115,9 @@ M, V and e set: system state, interrupts masked, overflow traps masked,
 PC chain shifting on.
 
 **Memory.** RAM from 0 to `--mem-size`, big-endian, plus the I/O page.
-Anything else is an error. The simulator does not model the system/user
-address split of manual §2.5.
+Anything else is an error, unless `--board` adds a board's address map
+(below). The simulator does not model the system/user address split of
+manual §2.5.
 
 **Instructions.** All of spec §3 to §6, decoded strictly: undefined
 encodings (branch conditions 000 and 100, unknown function codes, a
@@ -176,6 +182,87 @@ chain while it is shifting (outside a handler) gives the last frozen
 contents rather than live pipeline PCs.
 
 `hsc` stops the simulation with an error.
+
+**Interrupts.** Only with `--board`, whose interrupt controller is the
+one source. Entry follows spec §10 (Hypothesis, strongly supported):
+when the controller has an enabled request pending and PSW bit 4 (M) is
+clear, the simulator loads the PC chain with the three instructions that
+were in the pipeline and did not complete, and continues at word address
+0. The handler saves the chain with three `movfrs pcm4`, restores it with
+three `movtos pcm1` and returns with `jpcrs`, `jpc`, `jpc`, which
+restarts the three in order. An interrupt is taken only between control
+transfers (not in a delay slot and not while slots are squashed), so the
+three PCs are always sequential. A store at the head of the chain has
+already been done when the interrupt is taken (spec §10): a store
+executes first and the interrupt is taken behind it with the store at the
+head, so a handler that restarts it as it is does the store twice; the
+test program `tests/board_blink.s` shows the check the spec describes,
+restarting the no-op at word 0 in its place. What the hardware does with
+the PSW on entry is not known (spec §10); the simulator does what `trap`
+does, PSWother ← PSWcurrent and then M, V set and S, I, U, O clear, so
+that `jpcrs` restores the PSW saved at entry as the spec says it must.
+Entry is charged one cycle; the real cost is not known.
+
+## Board model (`--board=spa3000`)
+
+A clean-room model of the SPA3000 board around the CPU, written from
+the [peripherals spec](https://github.com/openmipsx/devices/blob/main/spa3000/peripherals.md)
+("peripherals.md"), the [flash spec](https://github.com/openmipsx/devices/blob/main/spa3000/flash.md)
+("flash.md") and the public AMD Am29LV081B datasheet. Every register
+behaviour in `src/board.c`, `src/sysctl.c`, `src/timer.c`,
+`src/watchdog.c` and `src/flash.c` carries a `[spec: ...]` or
+`[datasheet: ...]` tag; where the spec marks a fact Hypothesis the model
+follows it as written and the comment says so. One peripheral per file,
+so the ones not modelled yet can be added. RAM and the I/O page work as
+without the option, so a test program can still exit and print.
+
+| Address | Modelled as | Source |
+|---|---|---|
+| 0x00000000–0x001FFFFF | RAM (`--mem-size`) | peripherals.md §1 |
+| 0x02000000, 0x12000000 + RAM size | The same RAM (alias: Hypothesis) | §1 |
+| 0x0C000000, 0x1C000000, 16 MB windows | Am29LV081B flash, 1 MB repeating. Reads assemble bytes big-endian (word fetches work, so code can run from flash). Writes are commands: unlock 0xAA at 0x555 and 0x55 at 0x2AA (A10–A0 decoded), autoselect 0x90 (manufacturer 0x01 at A7–A0 = 0, device 0x38 at 1, protection 0 at 2), byte program 0xA0 (clears bits only), sector erase 0x80, 0xAA, 0x55, 0x30 at the sector, chip erase 0x10, reset 0xF0. Programs and erases finish at once, so DQ7/DQ6/DQ5 polling reads finished data; timing and the identity sector's protection are not modelled | flash.md §1; datasheet Command Definitions and Autoselect Codes |
+| 0x14000000–0x14000003 | System-control register file (bits 1–0 not decoded): an address byte (bits 7–1 register, bit 0 = 1 read) then one data byte. A data byte without an address byte, or of the wrong direction, is an error. Regs 1 and 2 read the board-mode straps (bit 4 = 1, bit 0 = 1 on this board; which is which strap is not known); reg 3 bit 7 enables the watchdog; regs 4 and 5 are port 0 data and direction; 0x15 is the block's interrupt enable (bit 3) and 0x16 its status, write 1 to clear, its bit 5 reserved for the RTL8019AS; other registers are latches. The block's interrupt (any status bit set while bit 3 of 0x15 is set; which mask bit is which is not known) is cascaded into interrupt-controller bit 13 on its rising edge. Wider than byte accesses use the low byte and fill every lane on a read (modelling choice) | §3, §5, §6 |
+| 0x14000030 + 0x40·n | RTL8019AS register n: an error that says the Ethernet controller is not modelled yet | §1, §8 |
+| 0x18000000, 16 MB | Nothing: reads give 0 (the value is not known), writes are dropped | §1 |
+| 0x20004000–0x2000403F | Timer, interrupt controller and GPIO (below) | §2, §4, §5 |
+| Other 0x2000xxxx | An error that names the register and says it is not modelled yet (TDM map, DMA columns, DSP, clock set-up) | §2 |
+
+**Timer and interrupt controller** (peripherals.md §4). 0x400C counts up
+one per cycle from 0 at reset; writing it sets the count. When the count
+passes from 0xFFFFFFFF to 0, status bit 1 is set. Pending = 0x4038 &
+0x4034 & 0x3FFF; writing 0x4010 clears bit 1 and writing 0x4024 clears
+bit 13; a write to 0x4038 is ignored (not described). 0x402C and 0x4030
+are GPIO latches that read back as written; a low-then-high pulse on
+0x402C bit 2 kicks the watchdog. 0x4000, 0x4004, 0x4008, 0x4014 and
+0x4028 are latches with unknown roles. Accesses must be word wide (all
+the spec describes). The firmware's tick, writing back count − 809,930,
+gives a period a few cycles longer than 809,930 here, since the count
+runs on between the read and the write; the spec's exact figure leaves
+that gap out.
+
+**Watchdog** (peripherals.md §5). Enabled by system-control reg 3 bit 7;
+kicked by the 0x402C pulse. It does not run until enabled (whether it
+runs from reset is not known, P1), and its timeout is not known: the
+firmware relies on more than 5.03 s, so the default is 8 s
+(`--watchdog`). When it bites, the simulator stops with status 123 and
+reports the time since the last kick.
+
+**Port 0 as an observable** (peripherals.md §6). Every change of a port 0
+pin's state (released, driven low, driven high) is logged with its cycle
+and time at 81 MHz, named by the board net: `eth-reset` (bit 0, RTL8019AS
+RSTDRV, asserted when driven 1), `si3210-reset` and `si3050-reset` (bits
+1 and 2, active low), `led` (bit 3: driven 0 = on, 1 = off), `relay`
+(bit 4, predicted), `si3050-cs` (bit 5), `aux1-6`, `aux1-7`. The
+watchdog's enable and bite and flash erases are logged the same way:
+
+```
+mipsx-sim: board: cycle 40496919 (0.499962 s): port0 led on
+```
+
+`tests/board_blink.s` is the LED milestone on the simulator: the timer
+tick, the interrupt handler, the watchdog kick and the LED toggle every
+50 ticks; the test asserts that the `led` lines are 0.5 s apart. `-s`
+adds the kick, program and erase counts to the statistics.
 
 ## Hazards reported
 
@@ -251,8 +338,9 @@ above (`--hazards` applies):
 | `md-delay-2` | P4 also applies with one instruction in between |
 | `icache` | Fetching a word that was stored to since the program was loaded is a hazard: an instruction cache that stores do not update |
 
-There is no PSW variant: nothing in the simulator raises an interrupt,
-so a wrong PSW layout cannot change what a program computes here.
+There is no PSW variant: without `--board` nothing raises an interrupt,
+so a wrong PSW layout cannot change what a program computes here. With
+the board, the M bit (bit 4) is the one spec §10 confirms.
 
 ## I/O page
 
@@ -286,7 +374,8 @@ pseudo-instructions: `expect rN,value` (exits with the source line
 number if rN differs; clobbers r1) and `exit #n`. It writes a linked
 ELF. `tests/run_tests.py` assembles and runs each `tests/*.s` and checks
 the directives at its top (`; EXIT:`, `; STDOUT:`, `; STDERR:`,
-`; ARGS:`, `; RUNNER:`, `; ELF:` and others; see the script). To run one
+`; ARGS:`, `; RUNNER:`, `; ELF:`, `; LOG-PERIOD:` for the spacing of
+board log lines, and others; see the script). To run one
 test: `python3 tests/run_tests.py --sim build/mipsx-sim --runner
 ./mipsx-run -v tests/alu.s`.
 
@@ -305,8 +394,11 @@ The assembler is only for these tests; real programs use the LLVM tools.
 
 - The lit configuration in the LLVM tree (S8): a `%mipsx-run`
   substitution and a linker script for simulator programs (S7).
-- Interrupts and overflow traps (no interrupt sources; abi §13.3 says
-  the simulator never traps on overflow).
+- Overflow traps (abi §13.3 says the simulator never traps on overflow).
+  Interrupts exist only with `--board`.
+- The rest of the SPA3000: RTL8019AS, the Si3210 and Si3050 on the
+  bit-banged bus, the DMA columns, the DSP, and the flash's program and
+  erase timing (peripherals.md §8, flash.md §1).
 - The system/user address split, and live PC chain contents outside
   exception handlers.
 - `EF_MIPSX_VSHIFT` (abi §11.2, plan L2): the simulator runs `shav` and
