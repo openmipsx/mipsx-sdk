@@ -1,6 +1,6 @@
-# tools: image packer and verifier
+# tools: image packer, verifier and recovery client
 
-Work package S7 of the LLVM backend plan. Both are Python 3 scripts that
+Work package S7 of the LLVM backend plan. All three are Python 3 scripts that
 use only the standard library, written from the
 [firmware image format spec](https://github.com/openmipsx/devices/blob/main/common/firmware-image-format.md)
 ("format spec") alone. They contain no vendor code or data, and the tests use only our
@@ -10,12 +10,16 @@ own programs.
 |---|---|
 | `mipsx_pack.py` | ELF in, upgrade image out: one type 2 section |
 | `mipsx_verify.py` | Re-reads an image with the format spec's rules only; shares no code with the packer |
+| `mipsx_recover.py` | Sends an image to a unit running its recovery program (section B) over the multicast recovery protocol, and serves it by TFTP |
 | `loader-stub.s` | Source of the loader the packer puts at the end of the section (assembled words are in `mipsx_pack.py`; a test checks they match) |
 | `tests/test_tools.py` | Packer, verifier, corrupt images, and the packed image run on the simulator |
+| `tests/test_recover.py`, `tests/fake_unit.py` | The recovery client against a fake section B on loopback, and its messages byte for byte |
 
 ```
 python3 tools/mipsx_pack.py prog.elf -o prog.bin --version 9.0.0
 python3 tools/mipsx_verify.py -v prog.bin
+python3 tools/mipsx_recover.py discover
+sudo python3 tools/mipsx_recover.py upgrade prog.bin
 make check                      # at the top level: runs these tests too
 ```
 
@@ -132,9 +136,109 @@ table slots and the section at 0x200 is rejected.
 - Do not flash anything until the recovery question (format spec Q7,
   stack plan §3.5) is settled.
 
+## The recovery client
+
+`mipsx_recover.py` is the clean-side replacement for the vendor's Windows
+recovery tool: a way to put an application back on a unit whose
+application no longer boots, before any experimental image is flashed.
+It speaks the protocol of format spec §7.1 to section B (§5, "What
+section B does") and nothing else; it cannot reach a unit that is
+running its application or that has no working section B.
+
+```
+python3 tools/mipsx_recover.py discover [-v]
+sudo python3 tools/mipsx_recover.py upgrade prog.bin [--target ID] [-v]
+python3 tools/mipsx_recover.py upgrade prog.bin --tftp-port 0   # unprivileged
+```
+
+What `upgrade` does, with the spec reference for each step:
+
+1. Runs `mipsx_verify.py`'s checks over the image (`--no-verify` to skip)
+   and reports its version and section types. Section B writes only
+   sections of type 2 and above (§5, Installing, step 8), so types 0 and
+   1 in the image are reported as skipped, and an image with no type 2
+   section gets a warning: installing it clears the application slot
+   (§6).
+2. Opens two sockets: one bound to port 4811 (replies come there, and
+   requests go from there) and one bound to the TFTP port, both joined to
+   234.4.8.10. The TFTP socket is joined because the unit sends its read
+   request **to the group** at the port named in the request, and its
+   acknowledgements to the socket that answered (§7.1), so one socket
+   must do both.
+3. Sends a type 0 discovery request (160 bytes: type at 0, `RECM` at 4,
+   target `FFFFFFFFFFFF` or `--target` at 8) to 234.4.8.10:4810 and
+   collects type 1 replies for 2.5 s. Exactly one unit must answer, or
+   the one named by `--target`; with `--any` this step is skipped and the
+   upgrade request is addressed to every unit.
+4. Sends the type 2 request with the TFTP port at 0x1C and the file name
+   at 0x20, addressed to the unit found, and reports the acknowledgement
+   (the request echoed, cut to 100 bytes).
+5. Answers the unit's TFTP read request for that name (octet mode only;
+   other names and modes get a TFTP error) with 512-byte blocks, each
+   acknowledged before the next, resending a block up to 5 times after
+   5 s without an acknowledgement. Progress is printed every tenth of
+   the file.
+6. Waits 30 s, then sends a discovery addressed to the unit. The spec
+   says a unit that installed the image stops and waits for a power
+   cycle, and one that rejected it goes on listening (§5, §7.1), so
+   silence is reported as probable success (exit 0) and a reply as
+   probable failure (exit 2). `--no-post-check` skips this.
+
+`-v` hex-dumps every datagram sent and received. Every datagram arriving
+on either socket that is not what the client is waiting for is reported
+rather than dropped silently.
+
+**Open points in the format spec.** §7.1 fixes the ports, group, the
+160-byte request, the magic, the types and the field offsets. The
+following it either leaves open or has only from the third-party
+description, "unconfirmed on the SPA3000". Each is an option, defaulting
+to the most conservative reading; all of them are questions for the
+dirty side to settle with a capture of the vendor tool, or on the board
+model.
+
+| # | Open point | What the client does | Option |
+|---|---|---|---|
+| R1 | Where replies go: to the group at 4811 or to the sender at 4811 (§7.1 says the decompiler hides the address). | Binds 4811 on every address and joins the group, so both arrive. | `--reply-port`, `--interface` |
+| R2 | Which source port the unit expects requests from. The public description says the client sends from 4811; the spec does not say the unit checks. | Sends from the 4811 socket. | `--reply-port` |
+| R3 | Width and byte order of the TFTP port field at 0x1C: a 16-bit port, or a 32-bit word? Nothing between 0x1C and 0x20 is otherwise described. | 16-bit big-endian at 0x1C, bytes 0x1E–0x1F zero. | `--port-width` (16 or 32) |
+| R4 | Width of the identifier field: 20 bytes per the public description; the spec says only "NUL-terminated from offset 8". What the identifier *is* (the factory record's +0x20 string is a Hypothesis for the serial number) and whether the type 1 reply's identifier is exactly the string that matches. | Accepts 1–19 characters; addresses the upgrade to the identifier the unit's own reply gave. | `--target`, `--any` |
+| R5 | Whether the unit requires a particular TFTP port (69?) or accepts any. | Default 69, which needs privileges on Linux. | `--tftp-port` (0 picks a free port) |
+| R6 | How much of the file name the unit uses: 67 bytes per the public description. | Refuses names of 67 or more characters. | `--name` |
+| R7 | Whether the unit's TFTP client sends options (RFC 2347 `blksize`, `tsize`) and whether it accepts a server that ignores them. | Ignores options and sends plain 512-byte blocks, as RFC 2347 allows. | — (reported in the log) |
+| R8 | Whether the read request names the file in octet mode. | Serves octet only; refuses other modes. | — (reported) |
+| R9 | TFTP timing: how long the unit waits for a block and whether it retransmits acknowledgements. | 5 s per block, 5 resends. | `--block-timeout`, `--block-retries` |
+| R10 | How long after the acknowledgement the read request comes, and how long the install takes (erase, write, read back and repeat, §5 step 8). | 60 s for the read request; 30 s before the post-check. | `--rrq-timeout`, `--install-wait` |
+| R11 | How the result is reported: §5 says error codes exist but "their reporting path was not traced", and a successful install stops without restarting. | Infers it from whether the unit still answers discovery. | `--no-post-check` |
+| R12 | Whether a lost type 2 request may be resent without starting a second upgrade; whether the acknowledgement always comes. | Never resends a type 2 request; waits for the read request even without an acknowledgement. | `--repeat` (discovery only) |
+| R13 | Multicast TTL and the interface the vendor tool uses. | TTL 1, the system's default interface. | `--ttl`, `--interface` |
+| R14 | Whether the unit answers a unicast request to its own address (the spec describes only the group). | Sends to the group. | `--unicast ADDR` |
+| R15 | The meaning of the two bytes at 0x62 of the type 1 reply. | Printed as hex. | — |
+
+**Tests** (`tests/test_recover.py`) run the client against
+`tests/fake_unit.py`, a fake section B written again from the spec's
+description (§5 main loop and installer steps 2–8, §7.1 message layouts)
+that shares no code with the client. Everything runs on loopback with
+unicast addresses and free ports (the group, ports and timings are
+options), so no root and no network are needed. The tests cover
+discovery (one unit, two units, targeted requests ignored by the other
+unit, replies to the group, repeated requests, junk on the reply port),
+the whole upgrade (image delivered intact, the fake's installer writes
+exactly the image's type 2 section, acknowledgement echo, 32-bit port
+field, dropped blocks resent, `--any`, a unit that rejects an image and
+keeps listening), the TFTP server alone (block boundaries, drops, wrong
+name and mode, a peer that never acknowledges) and the command line.
+The packet-level check builds each request the spec describes by hand
+(type, `RECM`, target, port, name at their offsets, zero elsewhere) and
+compares it with what the fake unit received, and checks every TFTP
+block against RFC 1350 and the image.
+
 ## Not done yet
 
 - Link-testing with lld (S5): the tests build ELFs with
   `sim/tests/mxasm.py`. Once lld exists, pack an lld-linked program and
   check the result still runs in the simulator test.
 - Writing more than one section, or deflate-compressed segments.
+- The recovery client has run only against the fake unit. Before it is
+  trusted with a real unit, confirm R1–R6 on the wire (a capture of the
+  vendor tool talking to a unit in recovery mode would settle most of
+  them) and run it against the recovery program on the board model.
