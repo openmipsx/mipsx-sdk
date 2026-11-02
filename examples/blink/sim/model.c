@@ -16,12 +16,17 @@
  *     with DQ7, DQ6 toggling and DQ5 on failure; 1 MB of contents in RAM
  *     with a boot record pair and a copy of this program as the section
  *     the type 2 slot points at, laid out as tools/mipsx_pack.py lays a
- *     section out (format spec §4).
+ *     section out (format spec §4);
+ *   - the boot selector's view of the two blocks (format spec §5, "What
+ *     each program checks in a record" and "Order"): at the start and
+ *     whenever a flash operation changes it, the model prints which
+ *     block and which slot the selector would follow at the next reset.
  *
  * Options (the program's command line): --stuck-timer, --no-record,
  * --block1-erased, --tie, --slot-unused, --not-ours, --bad-id,
- * --erase-fail, --program-fail.  At exit the model prints what the two
- * boot-record blocks hold and whether the copied area survived, so
+ * --erase-fail, --program-fail, --seq-high, --seq-wrap, --odd-record,
+ * --block1-newer, --block1-slotless.  At exit the model prints what the two boot-record
+ * blocks hold and whether the copied area survived, so
  * tests/test_blink.py can check the net without reading flash itself.
  *
  * Output goes straight to the simulator's I/O page (abi §13.5), not
@@ -42,7 +47,8 @@ extern char __text_start[], __data_end[];
 
 static int opt_stuck_timer, opt_no_record, opt_block1_erased, opt_tie;
 static int opt_slot_unused, opt_not_ours, opt_bad_id, opt_erase_fail;
-static int opt_program_fail;
+static int opt_program_fail, opt_seq_high, opt_seq_wrap, opt_odd_record;
+static int opt_block1_newer, opt_block1_slotless;
 
 static uint32_t sim_cycles;          /* the timer count */
 #define TICK_PER_READ (CPU_HZ / 1000u)
@@ -229,6 +235,8 @@ static uint32_t erases, programs;
 #define PROGRAM_POLLS 3
 #define ERASE_POLLS   40
 
+static void selector_report(void);
+
 uint8_t hal_flash_read(uint32_t off)
 {
     off &= FLASH_SIZE - 1;
@@ -251,6 +259,7 @@ uint8_t hal_flash_read(uint32_t off)
         busy_polls--;
         if (busy_polls == 0) {
             fstate = F_READ;
+            selector_report();
             return flash[off];
         }
         toggle ^= 0x40;
@@ -266,6 +275,7 @@ uint8_t hal_flash_read(uint32_t off)
             for (i = 0; i < FLASH_SECTOR_SIZE; i++)
                 flash[base + i] = 0xFF;
             fstate = F_READ;
+            selector_report();
             return flash[off];
         }
         toggle ^= 0x40;
@@ -351,6 +361,80 @@ void hal_flash_write(uint32_t off, uint8_t value)
     }
 }
 
+/* ---- the boot selector's view (format spec §5) ------------------------ */
+
+/* §5: halfwords 0x0400 and 0x1000, each followed by its complement. */
+static const uint8_t pairs_value[8] = {0x04, 0x00, 0xFB, 0xFF,
+                                       0x10, 0x00, 0xEF, 0xFF};
+static const char br_magic[8] = {'S', 'I', 'P', 'U', 'R', 'A', ' ', '*'};
+
+static uint32_t r32(uint32_t off)
+{
+    return ((uint32_t)flash[off] << 24) | ((uint32_t)flash[off + 1] << 16) |
+           ((uint32_t)flash[off + 2] << 8) | flash[off + 3];
+}
+
+static int has_magic(uint32_t off)
+{
+    uint32_t i;
+    for (i = 0; i < 8; i++)
+        if (flash[off + i] != (uint8_t)br_magic[i])
+            return 0;
+    return 1;
+}
+
+/* The block the selector follows: only the magic is checked; of two,
+   the higher +0x08 word compared unsigned, block 0 on a tie.  -1 if
+   neither block holds a record. */
+static int selector_block(void)
+{
+    int v0 = has_magic(BOOT_BLOCK0), v1 = has_magic(BOOT_BLOCK1);
+    if (v0 && v1)
+        return r32(BOOT_BLOCK1 + BR_SEQ) > r32(BOOT_BLOCK0 + BR_SEQ) ? 1 : 0;
+    return v1 ? 1 : v0 ? 0 : -1;
+}
+
+/* A slot the selector uses: its magic, an address that is not erased,
+   and address OR check word all ones. */
+static int selector_slot_ok(uint32_t slot)
+{
+    uint32_t addr = r32(slot + BR_SLOT_ADDR);
+    return has_magic(slot) && addr != 0xFFFFFFFFu &&
+           (addr | r32(slot + BR_SLOT_CHECK)) == 0xFFFFFFFFu;
+}
+
+static int last_report;        /* block + 2 (1 = scan), 0 = none yet: .bss */
+static uint32_t last_slot;
+
+/* Prints "selector: block B type T slot -> ADDR", or "selector: scan",
+   whenever that differs from the last report ("Order" steps 1 to 3; the
+   section the slot points at is not checked here). */
+static void selector_report(void)
+{
+    int b = selector_block();
+    uint32_t block = b == 1 ? BOOT_BLOCK1 : BOOT_BLOCK0, slot = 0;
+    if (b >= 0 && selector_slot_ok(block + BR_SLOT_TYPE2))
+        slot = BR_SLOT_TYPE2;
+    else if (b >= 0 && selector_slot_ok(block + BR_SLOT_TYPE1))
+        slot = BR_SLOT_TYPE1;
+    else
+        b = -1;
+    if (b + 2 == last_report && slot == last_slot)
+        return;
+    last_report = b + 2;
+    last_slot = slot;
+    stamp();
+    if (b < 0) {
+        put("selector: scan\n");
+        return;
+    }
+    put("selector: block ");
+    put_dec((uint32_t)b);
+    put(slot == BR_SLOT_TYPE2 ? " type 2 slot -> " : " type 1 slot -> ");
+    put_hex(r32(block + slot + BR_SLOT_ADDR));
+    put("\n");
+}
+
 /* ---- initial flash contents -------------------------------------------- */
 
 static void w32(uint32_t off, uint32_t v)
@@ -362,19 +446,18 @@ static void w32(uint32_t off, uint32_t v)
 }
 
 static void write_record(uint32_t block, uint32_t seq, uint32_t slot1,
-                         uint32_t slot2)
+                         uint32_t slot2, int odd)
 {
-    static const char magic[8] = {'S', 'I', 'P', 'U', 'R', 'A', ' ', '*'};
+    const char *magic = br_magic;
     uint32_t i;
     for (i = 0; i < 8; i++)
         flash[block + i] = (uint8_t)magic[i];
     w32(block + BR_SEQ, seq);
-    w32(block + BR_SEQ_CHECK, ~seq);
-    /* §5: halfwords 0x0400 and 0x1000, each with its complement. */
-    flash[block + 0x10] = 0x04; flash[block + 0x11] = 0x00;
-    flash[block + 0x12] = 0xFB; flash[block + 0x13] = 0xFF;
-    flash[block + 0x14] = 0x10; flash[block + 0x15] = 0x00;
-    flash[block + 0x16] = 0xEF; flash[block + 0x17] = 0xFF;
+    /* ODD: a wrong complement and zeroed pairs, which the selector does
+       not read but the application does (§5, Simulated there). */
+    w32(block + BR_SEQ_CHECK, odd ? 0 : ~seq);
+    for (i = 0; i < 8; i++)
+        flash[block + BR_PAIRS + i] = odd ? 0 : pairs_value[i];
     for (i = 0; i < 8; i++) {
         flash[block + BR_SLOT_TYPE1 + i] = (uint8_t)magic[i];
         if (slot2)
@@ -473,6 +556,11 @@ void sim_model_init(int argc, char **argv)
         else if (streq(a, "--bad-id")) opt_bad_id = 1;
         else if (streq(a, "--erase-fail")) opt_erase_fail = 1;
         else if (streq(a, "--program-fail")) opt_program_fail = 1;
+        else if (streq(a, "--seq-high")) opt_seq_high = 1;
+        else if (streq(a, "--seq-wrap")) opt_seq_wrap = 1;
+        else if (streq(a, "--odd-record")) opt_odd_record = 1;
+        else if (streq(a, "--block1-newer")) opt_block1_newer = 1;
+        else if (streq(a, "--block1-slotless")) opt_block1_slotless = 1;
         else {
             put("model: unknown option ");
             put(a);
@@ -484,20 +572,30 @@ void sim_model_init(int argc, char **argv)
         flash[i] = 0xFF;
     install_program(SECTION_ENTRY);
     if (!opt_no_record) {
+        uint32_t slot1 = FLASH_RECORD_BASE + 0x20000;
         uint32_t slot2 = opt_slot_unused ? 0 : FLASH_RECORD_BASE + SECTION_ENTRY;
-        write_record(BOOT_BLOCK0, 5, FLASH_RECORD_BASE + 0x20000, slot2);
+        /* Block 0 is the newer by default.  --seq-high puts it at
+           0x80000000, newer than block 1 only in an unsigned compare;
+           --seq-wrap at 0xFFFFFFFE, too near the top for two more
+           records.  --block1-newer makes block 1 the newer and
+           --block1-slotless leaves out its type 2 slot: together, a
+           block the selector follows and the application would not;
+           with --tie, a block neither follows (§5). */
+        uint32_t seq0 = opt_seq_high ? 0x80000000u
+                      : opt_seq_wrap ? 0xFFFFFFFEu : 5;
+        uint32_t seq1 = opt_tie ? 5 : opt_block1_newer ? 6 : 4;
+        write_record(BOOT_BLOCK0, seq0, slot1, slot2, opt_odd_record);
         fill_block_area(BOOT_BLOCK0, 0x11);
         if (!opt_block1_erased) {
-            write_record(BOOT_BLOCK1, opt_tie ? 5 : 4,
-                         FLASH_RECORD_BASE + 0x20000, slot2);
+            write_record(BOOT_BLOCK1, seq1, slot1,
+                         opt_block1_slotless ? 0 : slot2, 0);
             fill_block_area(BOOT_BLOCK1, opt_tie ? 0x11 : 0x22);
         }
     }
-    /* What the active block holds now, for the checks at exit.  With a
-       tie, block 1 is the active one (as sections A and B choose). */
+    /* What the active block holds now, for the checks at exit: the
+       block the boot selector follows (block 0 on a tie, §5). */
     {
-        uint32_t active = (opt_tie && !opt_block1_erased) ? BOOT_BLOCK1
-                                                          : BOOT_BLOCK0;
+        uint32_t active = selector_block() == 1 ? BOOT_BLOCK1 : BOOT_BLOCK0;
         for (i = 0; i < sizeof orig_area; i++)
             orig_area[i] = flash[active + BR_COPY_START + i];
         for (i = 0; i < BR_SIZE; i++)
@@ -512,6 +610,7 @@ void sim_model_init(int argc, char **argv)
         }
     }
     put("model: ready\n");
+    selector_report();
 }
 
 static void dump_record(uint32_t block)
@@ -550,12 +649,22 @@ static int record_unchanged(uint32_t block, const uint8_t *want)
     return 1;
 }
 
+/* The record found, as the net rewrites it: a new sequence number with
+   its complement, the installers' halfword pairs, and the type 2 slot
+   blank or as found. */
 static int record_equals_original_except(uint32_t block, int slot_blank)
 {
     uint32_t i;
+    if (r32(block + BR_SEQ_CHECK) != ~r32(block + BR_SEQ))
+        return 0;
     for (i = 0; i < BR_SIZE; i++) {
         if (i >= BR_SEQ && i < BR_SEQ_CHECK + 4)
             continue;
+        if (i >= BR_PAIRS && i < BR_PAIRS + 8) {
+            if (flash[block + i] != pairs_value[i - BR_PAIRS])
+                return 0;
+            continue;
+        }
         if (i >= BR_SLOT_TYPE2 && i < BR_SLOT_TYPE2 + BR_SLOT_SIZE) {
             uint8_t want = slot_blank ? 0xFF : orig_record[i];
             if (flash[block + i] != want)
@@ -581,12 +690,8 @@ void sim_model_exit(int status)
     put("\n");
     dump_record(BOOT_BLOCK0);
     dump_record(BOOT_BLOCK1);
-    seq0 = ((uint32_t)flash[BR_SEQ] << 24) | ((uint32_t)flash[BR_SEQ + 1] << 16) |
-           ((uint32_t)flash[BR_SEQ + 2] << 8) | flash[BR_SEQ + 3];
-    seq1 = ((uint32_t)flash[BOOT_BLOCK1 + BR_SEQ] << 24) |
-           ((uint32_t)flash[BOOT_BLOCK1 + BR_SEQ + 1] << 16) |
-           ((uint32_t)flash[BOOT_BLOCK1 + BR_SEQ + 2] << 8) |
-           flash[BOOT_BLOCK1 + BR_SEQ + 3];
+    seq0 = r32(BOOT_BLOCK0 + BR_SEQ);
+    seq1 = r32(BOOT_BLOCK1 + BR_SEQ);
     put("check: seq0 ");
     put_dec(seq0);
     put(" seq1 ");

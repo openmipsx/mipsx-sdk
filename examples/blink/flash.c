@@ -15,7 +15,10 @@
  * datasheet's algorithm, including the re-read of DQ7 after DQ5 goes
  * high.  Every polling loop also has an iteration cap, so that a chip
  * that never answers cannot hang the program, and calls
- * flash_poll_hook() now and then so the watchdog is kicked.
+ * flash_poll_hook() now and then so the watchdog is kicked.  (The stock
+ * driver does not kick; its installers turn the watchdog off for the
+ * install instead, flash.md §1.  Here variant 2 has enabled the
+ * watchdog before the restore, and the kicks keep it satisfied.)
  *
  * Interrupts are masked for the whole program, so the 50 us sector-erase
  * time-out window (Table 4 note, "Sector Erase Command Sequence") cannot
@@ -45,8 +48,10 @@
 #define ERASE_POLL_CAP     400000000u
 #define POLL_HOOK_INTERVAL 0x10000u
 
+/* flash.md §1, "Driver behaviour": section A makes 3 erase attempts per
+   sector and 9 program attempts per byte (section B 5 and 61). */
 #define ERASE_RETRIES   3
-#define PROGRAM_RETRIES 3
+#define PROGRAM_RETRIES 9
 
 static void unlock(void)
 {

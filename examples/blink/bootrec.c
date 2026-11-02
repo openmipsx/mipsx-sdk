@@ -3,9 +3,10 @@
  * Copyright 2026 The mipsx-sdk authors.
  * SPDX-License-Identifier: Apache-2.0
  *
- * Written from firmware-image-format.md §5 ("Boot record", "Boot-record
- * blocks", "Order"), §6 ("an image with no type 2 section ... the unit
- * then starts section B") and flash.md §2, §4 and §6.
+ * Written from firmware-image-format.md §5 ("Boot record", "What each
+ * program checks in a record", "Order", "Boot-record blocks"), §6
+ * ("Rewriting the boot record from our own code") and flash.md §2, §4
+ * and §6.
  *
  * The net.  The boot selector starts whatever the type 2 slot of the
  * newest boot record points at, every time, with no way for a running
@@ -21,14 +22,24 @@
  *      (sequence + 2) into the other block with the slot restored, so
  *      the next reset starts this program again.
  *
+ * The active block is the one the boot selector follows, since that is
+ * the program the net has to steer: the block whose magic is intact,
+ * of two the one with the higher sequence number compared unsigned,
+ * and block 0 on a tie (§5, "What each program checks in a record").
+ * Sections A and B choose differently (type 2 slot validity first,
+ * block 1 on a tie) and must not be copied here.
+ *
  * Each write follows what sections A and B do (§5, "Boot-record
  * blocks"): erase the inactive block, copy 0x1000-0xFFFF across (here
- * 0x400-0xFFFF: the header copy and the event log too, so nothing is
- * lost), write the record, its first byte last, so that a block whose
- * magic is incomplete is never taken as valid.
+ * 0x400-0xFFFF: the header copy and the event log too, verbatim, which
+ * §6 allows), write the record, its first byte last, so that a block
+ * whose magic is incomplete is never taken as valid.
  *
- * The record is a copy of the one found, with only the sequence number,
- * its complement and the type 2 slot changed.  Nothing is invented.
+ * The record is a copy of the one found with the sequence number, its
+ * complement, the +0x10/+0x14 halfword pairs and the type 2 slot
+ * rewritten: the pairs with the values both installers write, so that
+ * the stock application finds all six of its validity flags clean in
+ * the restored record (§6).  The type 1 slot is kept (§6).
  */
 #include "bootrec.h"
 #include "board.h"
@@ -42,6 +53,9 @@
 #endif
 
 static const uint8_t BR_MAGIC[8] = {'S', 'I', 'P', 'U', 'R', 'A', ' ', '*'};
+/* §5, "Boot record": 0x0400 and 0x1000, each followed by its complement. */
+static const uint8_t BR_PAIRS_VALUE[8] = {0x04, 0x00, 0xFB, 0xFF,
+                                          0x10, 0x00, 0xEF, 0xFF};
 
 static int block_has_record(uint32_t block)
 {
@@ -65,7 +79,7 @@ int bootrec_find_active(struct bootrec *r)
     if (!v0 && !v1)
         return 0;
     if (v0 && v1)
-        r->active = (s1 >= s0) ? 1 : 0;   /* tie: block 1, as A and B do */
+        r->active = (s1 > s0) ? 1 : 0;    /* tie: block 0, as the selector */
     else
         r->active = v1 ? 1 : 0;
     block = r->active ? BOOT_BLOCK1 : BOOT_BLOCK0;
@@ -158,11 +172,13 @@ int bootrec_write(struct bootrec *r, uint32_t newseq, int with_slot)
         if (rc)
             return rc;
     }
-    /* The record: as found, new sequence number and complement, and
-       the type 2 slot blank or restored. */
+    /* The record: as found, new sequence number and complement, the
+       halfword pairs as the installers write them, and the type 2 slot
+       blank or restored. */
     memcpy(rec, r->record, BR_SIZE);
     put_be32(rec + BR_SEQ, newseq);
     put_be32(rec + BR_SEQ_CHECK, ~newseq);
+    memcpy(rec + BR_PAIRS, BR_PAIRS_VALUE, sizeof BR_PAIRS_VALUE);
     if (with_slot)
         memcpy(rec + BR_SLOT_TYPE2, r->slot2, BR_SLOT_SIZE);
     else
@@ -212,6 +228,12 @@ enum deadman_state deadman_arm(struct bootrec *r)
     if (!bootrec_slot_usable(r->slot2)) {
         hal_log("deadman: type 2 slot unused; leaving flash alone");
         return DEADMAN_NOT_OURS;
+    }
+    /* The net writes seq + 1 and then seq + 2, and each must beat the
+       record before it in the selector's unsigned compare (§5). */
+    if (r->seq >= 0xFFFFFFFEu) {
+        hal_log("deadman: sequence number would wrap; leaving flash alone");
+        return DEADMAN_SEQ_WRAP;
     }
     slot_addr = be32(r->slot2 + BR_SLOT_ADDR);
     hal_log_hex("deadman: type 2 slot points at", slot_addr);
