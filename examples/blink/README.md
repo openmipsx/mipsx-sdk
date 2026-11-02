@@ -8,13 +8,20 @@ openmipsx/devices (`spa3000/peripherals.md`, `spa3000/flash.md`,
 `common/firmware-image-format.md`, `common/processor-es3890.md`) and
 the Am29LV081B datasheet; no vendor code.
 
-**Status: never run on the board.** Both variants build, pack, pass
+**Status: run on the board once, 2026-11-02 (§10).** Variant 1 was
+installed through the stock web UI, started, and blinked, which settled
+H1, H2, H3 and H5–H7. But the dead-man net **skipped**: one of its
+checks stopped it and nothing was written, so the record (or the scan)
+starts this image on every boot and the unit has no software way back
+to the stock firmware. Which check failed is unknown, because this
+version showed the same 1 s toggle for every skip reason; the image now
+flashes a code instead (§2). Both variants build, pack, pass
 `tools/mipsx_verify.py`, and run on the simulator: on the program's own
 peripheral model and, as packed images started from flash, on the
 simulator's SPA3000 board model (§6). Every fact the image depends on
 that the specs mark Hypothesis is listed in §8, and the questions this
 image put to the specs in §9, each with what the specs (devices
-`8320838` and later) now answer and what is still open. Read both
+`8320838` and later) now answer and what is still open. Read §8–§10
 before flashing.
 
 | File | What |
@@ -88,10 +95,13 @@ these stages):
    §7.2 step 13).
 5. **Blink.** Bit 3 toggles between driven 0 (on) and driven 1 (off)
    with the timer at 0x2000400C counting CPU cycles at 81 MHz (§4):
-   every 500 ms when the net is armed or restored, every 1000 ms when
-   the net was skipped, every 125 ms after a flash failure. If the
-   timer count does not change in 100,000 consecutive reads, the program
-   falls back to a counted loop and the LEDs blink at some other rate.
+   every 500 ms when the net is armed or restored, every 125 ms after a
+   flash failure. When the net was skipped the LEDs flash a **code**
+   instead: *N* flashes (125 ms on, 125 ms off), then 1.5 s dark,
+   repeated, where *N* names the check that stopped it (table below).
+   If the timer count does not change in 100,000 consecutive reads, the
+   program falls back to a counted loop and the LEDs blink at some other
+   rate.
 6. **Restore.** After 15 s of blinking (variant and timer permitting)
    the record is rewritten with the slot back. The LEDs pause for the
    second or two that takes, then blink on.
@@ -106,7 +116,7 @@ is where to look first (§8, H5).
 | Off for 1–2 s after power-on, then blinking | Normal: stage 3 erased a 64 KB sector (0.7 s typical, 15 s maximum) and copied the configuration area |
 | Toggling every 0.5 s | Net armed or restored; CPU clock and timer as the spec says |
 | A pause of 1–2 s about 15 s in, then toggling again | The restore (stage 6). From here on a reset starts this image again |
-| Toggling every 1 s | Net skipped: no boot record, the type 2 slot of the record the selector follows unused, the slot's section is not this program, the sequence number too close to 0xFFFFFFFF, or the flash did not identify as an Am29LV081B (nothing was written) |
+| Bursts of *N* quick flashes, 1.5 s dark between bursts | Net skipped, nothing written. *N* = 1: the flash did not identify as an Am29LV081B; 2: no boot record; 3: the type 2 slot of the record the selector follows is unused; 4: the slot's section is not this program; 5: the sequence number is too close to 0xFFFFFFFF. (The image flashed on the board on 2026-11-02 toggled every 1 s for all five, §10) |
 | Toggling every 0.125 s | A flash erase (3 attempts) or byte program (9 attempts) failed; the active block is untouched |
 | Toggling at some other steady rate | The timer is not counting as §4 says (fallback loop), or the CPU clock is not 81 MHz |
 | Nothing, ever | The image was not started, or stopped before stage 4: see §5 |
@@ -390,19 +400,19 @@ happens here if it is wrong. "Format spec" is
 
 | # | Fact | Spec now | If wrong |
 |---|---|---|---|
-| H1 | The boot selector starts the type 2 slot's section by jumping to data + length − 0x10, with the loader stub's entry conditions (RAM at 0x1FF0 free, code runnable from freshly written RAM, nothing else expected of the section) | **Mostly answered.** Format spec §5 "Order" step 4 (Verified for the stock stubs; the selector starting an installed section is Simulated, Q10); up to the jump the selector touches no register, port or device (§5, Observed and Simulated). The image's start must be a multiple of 4 (§6), which `mipsx_verify.py` checks. On the board: unverified | Nothing blinks; the selector stops or runs garbage. Recovery needs a flash programmer unless the selector falls back |
-| H2 | Interrupts are masked at hand-over, or masking them with PSW bit 4 (the manual's M bit) works; exceptions enter at word 0 | **Mostly answered.** PSW bit 4 is the mask (processor spec §10); the reset code sets PSW = 0xF3, bit 4 included, before anything else (§7.1), and the selector does nothing that would clear it. What exceptions other than `trap` do is still not known (processor spec §10) | A stray interrupt or exception goes to address 0 and stops (variant 2: resets) |
-| H3 | 0x2000400C counts up once per CPU cycle, at 81 MHz, without an interrupt enabled and after only the §7.2 step 7 writes | Unchanged: §4, Hypothesis, strong; G10 | Period other than 0.5 s, or the fallback loop's rate |
-| H4 | The watchdog kick is the low-then-high pulse on 0x2000402C bit 2; its time-out exceeds 0.5 s; it is off from reset (or on, and the kick satisfies it) | **Partly.** Kick and enable still Hypothesis, strong (§5). New: the installers turn reg 3 bit 7 off and on again around an install (§5, Observed), so it is a run-time switch. Time-out and state at reset open (P1) | Variant 1 resets (watchdog on from reset and kick wrong), or variant 2 resets at the time-out |
-| H5 | Port 0 of the system-control device works with none of the stock firmware's other system-control writes (regs 0, 1, 2, 0x22, 0x23, 0x40, 0x43, 0x46, 0x47, 0x63, 0x64, 0x70) and none of the §7.2 step 3–6 on-chip writes; the CPU runs at 81 MHz without the reg 0x43/0x46/0x47 PLL values | Unchanged: §3, §7.2 step 11 (roles unknown; P4) | LEDs dark (port 0 not reached) or wrong rate (clock) |
-| H6 | The two-step byte protocol at 0x14000003 (address byte reg << 1 \| rw, then data), with 0x20004028 = 0 before each access, and address bits 1–0 not decoded | **Partly.** Protocol unchanged (§3, Observed). 0x20004028 is now read as the interrupt-suppress register (§2, §4; Hypothesis, strong): 0 holds interrupts off for 15 instructions, 9 for 6. With interrupts masked throughout, the image's writes to it change nothing; they are kept as the stock firmware makes them | LEDs dark |
-| H7 | Port 0 bit 3 (AUX1[3], pin 111) drives D4, D7, D8 through Q21 as a high-side switch: driven 0 = on, driven 1 = off; data then direction is the right order | Unchanged: §6 (pin Measured; polarity fits hardware.md H4) | LEDs inverted or dark |
+| H1 | The boot selector starts the type 2 slot's section by jumping to data + length − 0x10, with the loader stub's entry conditions (RAM at 0x1FF0 free, code runnable from freshly written RAM, nothing else expected of the section) | **Board 2026-11-02: confirmed.** The selector started the installed section and the stub, crt0 and `main` ran (the LEDs blinked). **Mostly answered.** Format spec §5 "Order" step 4 (Verified for the stock stubs; the selector starting an installed section is Simulated, Q10); up to the jump the selector touches no register, port or device (§5, Observed and Simulated). The image's start must be a multiple of 4 (§6), which `mipsx_verify.py` checks. On the board: unverified | Nothing blinks; the selector stops or runs garbage. Recovery needs a flash programmer unless the selector falls back |
+| H2 | Interrupts are masked at hand-over, or masking them with PSW bit 4 (the manual's M bit) works; exceptions enter at word 0 | **Board: confirmed** as far as a 10-minute run shows (no stray exception stopped it). **Mostly answered.** PSW bit 4 is the mask (processor spec §10); the reset code sets PSW = 0xF3, bit 4 included, before anything else (§7.1), and the selector does nothing that would clear it. What exceptions other than `trap` do is still not known (processor spec §10) | A stray interrupt or exception goes to address 0 and stops (variant 2: resets) |
+| H3 | 0x2000400C counts up once per CPU cycle, at 81 MHz, without an interrupt enabled and after only the §7.2 step 7 writes | **Board: confirmed.** 10 LED periods of 2 × 1000 ms by this counter took 20 s by stopwatch. Unchanged: §4, Hypothesis, strong; G10 | Period other than 0.5 s, or the fallback loop's rate |
+| H4 | The watchdog kick is the low-then-high pulse on 0x2000402C bit 2; its time-out exceeds 0.5 s; it is off from reset (or on, and the kick satisfies it) | **Board: partly.** Variant 1, kicking every ≤ 1 s and never writing reg 3, ran for over 10 minutes without a reset: the watchdog is off from reset or the kick satisfies it. Variant 2 not yet tried. **Partly.** Kick and enable still Hypothesis, strong (§5). New: the installers turn reg 3 bit 7 off and on again around an install (§5, Observed), so it is a run-time switch. Time-out and state at reset open (P1) | Variant 1 resets (watchdog on from reset and kick wrong), or variant 2 resets at the time-out |
+| H5 | Port 0 of the system-control device works with none of the stock firmware's other system-control writes (regs 0, 1, 2, 0x22, 0x23, 0x40, 0x43, 0x46, 0x47, 0x63, 0x64, 0x70) and none of the §7.2 step 3–6 on-chip writes; the CPU runs at 81 MHz without the reg 0x43/0x46/0x47 PLL values | **Board: confirmed** for port 0 and the LEDs; the clock is right (H3). Unchanged: §3, §7.2 step 11 (roles unknown; P4) | LEDs dark (port 0 not reached) or wrong rate (clock) |
+| H6 | The two-step byte protocol at 0x14000003 (address byte reg << 1 \| rw, then data), with 0x20004028 = 0 before each access, and address bits 1–0 not decoded | **Board: confirmed.** **Partly.** Protocol unchanged (§3, Observed). 0x20004028 is now read as the interrupt-suppress register (§2, §4; Hypothesis, strong): 0 holds interrupts off for 15 instructions, 9 for 6. With interrupts masked throughout, the image's writes to it change nothing; they are kept as the stock firmware makes them | LEDs dark |
+| H7 | Port 0 bit 3 (AUX1[3], pin 111) drives D4, D7, D8 through Q21 as a high-side switch: driven 0 = on, driven 1 = off; data then direction is the right order | **Board: confirmed**: D4, D7 and D8 toggled together, and D1 is independent of them. Polarity not separately checked (a toggle looks the same either way), but the LEDs were dark before stage 4 wrote driven 1. Unchanged: §6 (pin Measured; polarity fits hardware.md H4) | LEDs inverted or dark |
 | H8 | Port 0's other bits are released before the first write and may stay released (Ethernet, SLIC and DAA resets, Si3050 CS#) | **Partly.** Neither the reset code nor the selector touches port 0, so the image finds it as the hardware reset left it (format spec §5 "Order"; §7.1). That the reset state is all released is still Hypothesis (§6) | Nothing for the LEDs; the other chips are in whatever state reset left them |
 | H9 | The flash is an Am29LV081B at 0x0C000000, byte-wide, with the CPU's byte address n reaching flash byte n, commands and reads working through the 0x1C000000 alias (the form the stock driver uses), and WE# wired so the CPU can write | Unchanged: flash.md §1; the stock code relies on both aliases (format spec Q6) | Identify fails (1 s blink, flash untouched), or writes fail (0.125 s blink) |
 | H10 | The boot record format of format spec §5: `SIPURA *`, sequence at +0x08, the type 1 slot at +0x20 and the type 2 slot at +0x30, a slot used only if its magic is there, its address is not 0xFFFFFFFF and address OR check is 0xFFFFFFFF; a record with a blank type 2 slot and a valid type 1 slot starts section B | **Answered** (format spec §5 "What each program checks in a record", "Order"; Observed in the selector's code, Simulated). The selector checks only the magic, compares sequence numbers unsigned and takes block 0 on a tie; the image now chooses the same way (it took block 1 on a tie before) | — |
 | H11 | A record-only update may copy 0x400–0xFFFF verbatim and the stock programs accept the block; the record's halfword pairs need no change | **Answered** (format spec §6 "Rewriting the boot record from our own code"): verbatim log and header copy are fine; the application accepts a record whose magic, complement, both pairs and type 2 slot are right, and otherwise compacts once. The image now writes the installers' pair values rather than copying them. The pairs' meaning is still open (Q6) | — |
-| H12 | The stock installer writes a type 2 slot pointing at the new section's table entry, in both blocks, and restarts | **Open**: format spec §5, §7.2 describe it (Observed in the code), but Q10 (not reproduced end to end on the board model) stands | The image is in flash but never started, or started by the scan; power-cycling may help |
-| H13 | The image version 9.0.1 is above the per-model floor and the provider minimum | **Open** (format spec §7.2: the floor's value is not given) | The web upgrade is refused; nothing happens |
+| H12 | The stock installer writes a type 2 slot pointing at the new section's table entry, in both blocks, and restarts | **Board: partly.** The installer accepted the image and wrote the section (the selector started it after a power cycle), but the unit did not restart on its own: dark LEDs and no network for 8 minutes. Whether it wrote the record is not known (§10). **Open**: format spec §5, §7.2 describe it (Observed in the code), but Q10 (not reproduced end to end on the board model) stands | The image is in flash but never started, or started by the scan; power-cycling may help |
+| H13 | The image version 9.0.1 is above the per-model floor and the provider minimum | **Board: answered.** 9.0.1 was accepted. **Open** (format spec §7.2: the floor's value is not given) | The web upgrade is refused; nothing happens |
 | H14 | Section B at 0x20000 is intact and at a 64 KB boundary, and the type 1 slot points at it | Unchanged; a property of the unit, which no spec can settle (format spec §5, §6; flash.md §2, §6) | No recovery through the net; the selector stops at step 5 |
 | H15 | The Am29LV081B's command set and status bits as the datasheet says apply to this part on this board (DQ5 on failure) | **Answered** for the commands: flash.md §1 now agrees with the datasheet that unlock and command addresses are don't-cares, and gives the stock driver's retry counts (G16) | Flash failure patterns, or in the worst case a sector erased and not rewritten (the record's first byte last protects the selector's view) |
 
@@ -456,3 +466,63 @@ H13 (the version floor) and H14 (section B intact on this unit). The
 net covers a hang after arming; nothing covers an image that is never
 started, or that stops before stage 3 (§3, "What each failure leads
 to").
+
+## 10. The first board run (2026-11-02)
+
+Unit: SPA-3000, hardware 3.3.1, stock 3.1.20(GW), on a home LAN with a
+DHCP address. `blink.bin` (variant 1, 9.0.1) was served by TFTP from a
+PC on the same subnet and requested with `/admin/upgrade?tftp://…`.
+
+What happened, in order:
+
+1. The stock application fetched the image at once. Its TFTP read
+   request named `/blink.bin` (a leading slash) in octet mode with the
+   options `timeout` 5 and `tsize` 0, and it accepted a server that
+   ignored the options and sent plain 512-byte blocks (tools/README.md
+   R7, for the application's client; section B's is still untested).
+2. **The unit did not visibly restart.** For the next 8 minutes it was
+   off the network (no ARP, no HTTP, no answer to recovery-protocol
+   discovery) and D4, D7 and D8 stayed dark; only D1, the RTL8019AS's
+   own LED, flickered with LAN traffic. Format spec §7.2 says the
+   installer writes the record, logs and restarts; Q10 recorded that on
+   the board model neither installer wrote a record or restarted. This
+   run agrees with the model at least as far as the restart. Whether
+   the record was written is not known: the selector would start this
+   image either through the record or, with the record pointing at the
+   stock application whose last sector the install erased, through the
+   scan of 64 KB boundaries (section B being tried first, if its type 1
+   slot or scan position is valid; it was not started).
+3. After a power cycle the image ran: D4, D7 and D8 dark for about 1 s,
+   then toggling **every 1 s**, the pattern this version gave for every
+   skip reason, for as long as it was watched. A second power cycle 6 s
+   into a run did not change anything, as expected when nothing was
+   written.
+
+**What the board settled** (§8): H1, H2, H3, H5, H6, H7 confirmed; H4
+and H12 partly; H13 answered. The watchdog is either off from reset or
+satisfied by the kick (P1 partly). The timer counts at the rate the spec
+gives, to stopwatch accuracy.
+
+**What went wrong.** `deadman_arm()` stopped at one of five checks and
+left the flash alone, so the record was never armed, and a reset starts
+this image every time. Which check is unknown; the candidates that
+matter are the flash identify (the autoselect through the 0x1C000000
+alias, H9, G11, G13) and the section comparison (the installer's copy
+of the section against RAM; or the record not pointing at this image at
+all, see 2). The sequence-number check is all but excluded. With no
+network in this image, **the only way back is to read and reprogram the
+flash chip** (hardware.md H7). The dump will show which check failed.
+
+**Lessons**, applied in this version:
+
+- One LED pattern for five reasons was a design error. The skip reasons
+  now have distinct codes (§2), and `DEADMAN_NOT_OURS` is split into
+  `DEADMAN_SLOT_UNUSED` and `DEADMAN_NOT_OURS`.
+- The net cannot protect against its own checks failing. A first image
+  should carry some other way out, such as a network listener that
+  accepts an image, or should be tried only with an in-circuit flash
+  backup (the board-check plan's gate G1), which this run skipped
+  knowingly.
+- "Did the installer restart?" needs watching for: a unit that goes
+  quiet after an upgrade may be sitting in the installer, and a power
+  cycle is what starts the new image.

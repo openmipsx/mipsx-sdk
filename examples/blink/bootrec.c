@@ -227,7 +227,7 @@ enum deadman_state deadman_arm(struct bootrec *r)
     }
     if (!bootrec_slot_usable(r->slot2)) {
         hal_log("deadman: type 2 slot unused; leaving flash alone");
-        return DEADMAN_NOT_OURS;
+        return DEADMAN_SLOT_UNUSED;
     }
     /* The net writes seq + 1 and then seq + 2, and each must beat the
        record before it in the selector's unsigned compare (§5). */

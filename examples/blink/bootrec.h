@@ -20,9 +20,10 @@ enum deadman_state {
     DEADMAN_IDLE = 0,
     DEADMAN_NO_FLASH,     /* the chip did not identify: nothing touched */
     DEADMAN_NO_RECORD,    /* no valid boot record: nothing touched */
-    DEADMAN_NOT_OURS,     /* the type 2 slot is unused or does not load
-                             this program (started by the scan?): nothing
-                             touched */
+    DEADMAN_SLOT_UNUSED,  /* the record's type 2 slot is unused (started
+                             by the scan?): nothing touched */
+    DEADMAN_NOT_OURS,     /* the type 2 slot's section does not load this
+                             program: nothing touched */
     DEADMAN_SEQ_WRAP,     /* the sequence number is too close to
                              0xFFFFFFFF for two more records: nothing
                              touched */

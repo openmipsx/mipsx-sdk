@@ -224,20 +224,47 @@ class ModelTest(unittest.TestCase):
         self.assertIn("timer: not counting, using a loop", out)
         self.assert_net_done(out, (7, 6), (0, 1))
 
-    def assert_left_alone(self, out, reason, period):
+    def assert_code(self, out, n):
+        """The skip code: bursts of N flashes (125 ms on, 125 ms off)
+        separated by 1.5 s dark, at least two whole bursts."""
+        events = re.findall(r"\[t=(\d+)ms\] led: (on|off)", out)
+        ons = [int(t) for t, s in events if s == "on"]
+        self.assertGreaterEqual(len(ons), 2 * n, events)
+        bursts, cur = [], [ons[0]]
+        for a, b in zip(ons, ons[1:]):
+            if b - a > 1000:
+                bursts.append(cur)
+                cur = []
+            cur.append(b)
+        bursts.append(cur)
+        self.assertGreaterEqual(len(bursts), 2, bursts)
+        for burst in bursts[:-1]:
+            self.assertEqual(len(burst), n, bursts)
+            for a, b in zip(burst, burst[1:]):
+                self.assertTrue(250 <= b - a <= 260, burst)
+        for a, b in zip(bursts, bursts[1:]):
+            self.assertGreaterEqual(b[0] - a[-1], 1500 + 125, bursts)
+        # Every off after the first flash follows an on within 135 ms (the
+        # off at start-up, before any flash, is stage 4's LEDs-off).
+        for t, s in events:
+            if s == "off" and int(t) > ons[0]:
+                self.assertTrue(any(0 < int(t) - o <= 135 for o in ons),
+                                events)
+
+    def assert_left_alone(self, out, reason, code):
         self.assertIn(reason, out)
         self.assertEqual(self.counts(out)[:2], (0, 0))
         self.assertIn("check: block 0 area as-at-start, record as-at-start",
                       out)
         self.assertIn("check: block 1 area as-at-start, record as-at-start",
                       out)
-        self.assert_period(out, period)
+        self.assert_code(out, code)
 
     def test_seq_wrap(self):
         # 0xFFFFFFFE leaves no room for seq + 1 and seq + 2 above it.
         out = self.run_model("--seq-wrap")
         self.assert_left_alone(out, "deadman: sequence number would wrap",
-                               1000)
+                               5)
 
     def test_block1_newer_slotless(self):
         # Block 1 is newer and has no type 2 slot: the selector follows it
@@ -247,23 +274,23 @@ class ModelTest(unittest.TestCase):
         out = self.run_model("--block1-newer", "--block1-slotless")
         self.assertEqual(self.selector(out),
                          ["block 1 type 1 slot -> 0x0c020000"])
-        self.assert_left_alone(out, "deadman: type 2 slot unused", 1000)
+        self.assert_left_alone(out, "deadman: type 2 slot unused", 3)
 
     def test_no_record(self):
         out = self.run_model("--no-record")
-        self.assert_left_alone(out, "deadman: no boot record", 1000)
+        self.assert_left_alone(out, "deadman: no boot record", 2)
 
     def test_slot_unused(self):
         out = self.run_model("--slot-unused")
-        self.assert_left_alone(out, "deadman: type 2 slot unused", 1000)
+        self.assert_left_alone(out, "deadman: type 2 slot unused", 3)
 
     def test_not_ours(self):
         out = self.run_model("--not-ours")
-        self.assert_left_alone(out, "that section is not this program", 1000)
+        self.assert_left_alone(out, "that section is not this program", 4)
 
     def test_bad_id(self):
         out = self.run_model("--bad-id")
-        self.assert_left_alone(out, "deadman: flash not identified", 1000)
+        self.assert_left_alone(out, "deadman: flash not identified", 1)
 
     def test_erase_fail(self):
         # DQ5 on every erase: three attempts, then the fast pattern, and

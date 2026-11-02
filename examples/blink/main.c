@@ -16,8 +16,11 @@
  *   4. Timer and port 0 set-up; with BLINK_WATCHDOG=1 the watchdog is
  *      enabled now that kicking runs.
  *   5. Blink: toggle every 500 ms (DEADMAN armed or restored), every
- *      1000 ms if the net was skipped, every 125 ms if a flash operation
- *      failed.
+ *      125 ms if a flash operation failed.  If the net was skipped, a
+ *      code instead: N flashes of 125 ms on, 125 ms off, then 1.5 s
+ *      dark, where N says which check stopped it (skip_code() below).
+ *      The first board run (2026-11-02) showed one pattern for every
+ *      skip reason and could not tell them apart; hence the codes.
  *   6. After ARM_SECONDS of blinking, the record is rewritten with the
  *      slot restored; the LEDs pause for the second or two that takes.
  *   7. With BLINK_KICK_STOP_S set, kicking stops that many seconds after
@@ -49,14 +52,51 @@ static enum deadman_state state;    /* .bss */
 static uint32_t period_ms(void)
 {
     switch (state) {
-    case DEADMAN_ARMED:
-    case DEADMAN_RESTORED:
-        return 500;
     case DEADMAN_FAILED:
         return 125;
     default:
-        return 1000;
+        return 500;
     }
+}
+
+/* The number of flashes per burst when the net was skipped, 0 when it
+   was not (armed, restored or failed: a steady toggle instead). */
+static unsigned skip_code(void)
+{
+    switch (state) {
+    case DEADMAN_NO_FLASH:
+        return 1;
+    case DEADMAN_NO_RECORD:
+        return 2;
+    case DEADMAN_SLOT_UNUSED:
+        return 3;
+    case DEADMAN_NOT_OURS:
+        return 4;
+    case DEADMAN_SEQ_WRAP:
+        return 5;
+    default:
+        return 0;
+    }
+}
+
+/* One burst of the skip code: N flashes, then 1.5 s dark.  Kicks the
+   watchdog at every step (longest gap 750 ms). */
+static void skip_burst(unsigned n)
+{
+    unsigned i;
+
+    for (i = 0; i < n; i++) {
+        leds_set(1);
+        wd_kick();
+        delay_ms(125);
+        leds_set(0);
+        wd_kick();
+        delay_ms(125);
+    }
+    delay_ms(750);
+    wd_kick();
+    delay_ms(750);
+    wd_kick();
 }
 
 int main(int argc, char **argv)
@@ -87,7 +127,18 @@ int main(int argc, char **argv)
 #endif
     hal_log("blink: start");
 
-    /* 5. Blink forever. */
+    /* 5. Blink forever.  Skipped: the code, burst after burst; nothing
+       else happens in those states. */
+    if (skip_code()) {
+        for (;;) {
+            skip_burst(skip_code());
+            toggles++;
+#ifdef BLINK_SIM
+            if (toggles >= 3)
+                sim_model_exit(0);
+#endif
+        }
+    }
     for (;;) {
         uint32_t p = period_ms();
         on = !on;
@@ -116,8 +167,7 @@ int main(int argc, char **argv)
 #endif
         }
 #ifdef BLINK_SIM
-        if (state != DEADMAN_ARMED && state != DEADMAN_RESTORED &&
-            toggles >= 6)
+        if (state == DEADMAN_FAILED && toggles >= 6)
             sim_model_exit(0);
 #endif
     }
