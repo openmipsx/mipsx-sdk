@@ -18,8 +18,13 @@
 #define REG_TIMER_COUNT    0x400Cu   /* counts up one per CPU cycle (§4) */
 #define REG_TIMER_ACK      0x4010u   /* timer interrupt acknowledge (§2) */
 #define REG_TIMER_4014     0x4014u   /* written 0 at start-up (§7.2 step 7) */
-#define REG_GPIO_PRE       0x4028u   /* written before GPIO/system-control
-                                        accesses; meaning unknown (§2, P2) */
+#define REG_GPIO_PRE       0x4028u   /* interrupt suppress: S holds off
+                                        interrupts for 15 - S instructions
+                                        (§2, §4; Hypothesis, strong).
+                                        Written as the stock firmware does
+                                        before GPIO and system-control
+                                        accesses; with interrupts masked
+                                        throughout it changes nothing */
 #define REG_GPIO_WD        0x402Cu   /* bit 2: watchdog kick pulse (§5) */
 #define REG_INT_ENABLE     0x4034u   /* interrupt enable; 0 = none (§4) */
 
@@ -68,6 +73,7 @@
 #define BR_SIZE            0xA0u
 #define BR_SEQ             0x08u     /* sequence number, higher wins */
 #define BR_SEQ_CHECK       0x0Cu     /* its complement */
+#define BR_PAIRS           0x10u     /* 04 00 FB FF 10 00 EF FF */
 #define BR_SLOT_TYPE1      0x20u     /* section B (recovery) */
 #define BR_SLOT_TYPE2      0x30u     /* the application: us */
 #define BR_SLOT_SIZE       0x10u
